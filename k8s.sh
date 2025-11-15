@@ -32,8 +32,8 @@ echo "=== Fixing permissions for MicroK8s ==="
 sudo chown -R $USER_NAME ~/.kube
 sudo chown -R $USER_NAME /var/snap/microk8s || true
 
-echo "=== Applying new group membership ==="
-exec sg microk8s -c "$0" || true
+echo "=== IMPORTANT: If this is the first time adding the user to microk8s group, run: ==="
+echo "newgrp microk8s"
 
 echo "=== Waiting for MicroK8s to become ready ==="
 microk8s status --wait-ready
