@@ -54,8 +54,12 @@ echo "=== Setting up kubeconfig for MicroK8s ==="
 mkdir -p ~/.kube
 microk8s config > ~/.kube/config
 chmod 600 ~/.kube/config
+echo "Kubeconfig written to ~/.kube/config"
 
 echo ""
-echo "=== K9s Installation Complete ==="
+echo "=============================================="
+echo " K9s Installation Complete"
+echo "----------------------------------------------"
 echo "Run 'k' or 'k9s' to launch K9s."
-echo "MicroK8s kubeconfig is ready."
+echo "MicroK8s kubeconfig is ready at ~/.kube/config"
+echo "=============================================="
