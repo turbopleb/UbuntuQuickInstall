@@ -1,45 +1,46 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -e
 
 echo "=== Updating packages ==="
-sudo apt update
+sudo apt update -y
 sudo apt upgrade -y
 
 echo "=== Installing required packages (curl, tar, jq, openssl) ==="
 sudo apt install -y curl tar jq openssl
 
 echo "=== Ensuring user is in microk8s group ==="
-if id -nG "$USER" | grep -qw "microk8s"; then
+if groups $USER | grep &>/dev/null '\bmicrok8s\b'; then
     echo "User $USER already in microk8s group."
 else
-    sudo usermod -a -G microk8s "$USER"
-    echo "Added $USER to microk8s group. Log out/in for changes to take effect."
+    echo "Adding user $USER to microk8s group..."
+    sudo usermod -aG microk8s $USER
+    echo "You need to log out and back in for group changes to take effect."
 fi
 
 echo "=== Verifying MicroK8s access ==="
-if ! microk8s status --wait-ready; then
-    echo "MicroK8s is not ready. Exiting."
+if microk8s status --wait-ready >/dev/null 2>&1; then
+    echo "MicroK8s is running"
+else
+    echo "MicroK8s is not running. Please start MicroK8s."
     exit 1
 fi
 
 echo "=== Detecting system architecture ==="
 ARCH=$(uname -m)
-if [ "$ARCH" = "x86_64" ]; then
-    K9S_ARCH="amd64"
+if [[ "$ARCH" == "x86_64" ]]; then
+    TARGET="amd64"
 else
-    echo "Unsupported architecture: $ARCH"
-    exit 1
+    TARGET="$ARCH"
 fi
+echo "Architecture detected: $ARCH → K9s target: $TARGET"
 
 echo "=== Installing K9s if missing ==="
-if ! command -v k9s &>/dev/null; then
-    echo "Downloading K9s..."
-    TMPDIR=$(mktemp -d)
-    K9S_VERSION=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | jq -r .tag_name)
-    curl -Lo "$TMPDIR/k9s.tar.gz" "https://github.com/derailed/k9s/releases/download/$K9S_VERSION/k9s_${K9S_VERSION:1}_Linux_$K9S_ARCH.tar.gz"
-    tar -xzf "$TMPDIR/k9s.tar.gz" -C "$TMPDIR"
-    sudo mv "$TMPDIR/k9s" /usr/local/bin/k9s
-    rm -rf "$TMPDIR"
+if ! command -v k9s >/dev/null 2>&1; then
+    echo "Downloading latest K9s..."
+    LATEST=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | jq -r '.tag_name')
+    curl -L https://github.com/derailed/k9s/releases/download/${LATEST}/k9s_Linux_${TARGET}.tar.gz -o /tmp/k9s.tar.gz
+    tar -xzf /tmp/k9s.tar.gz -C /tmp
+    sudo mv /tmp/k9s /usr/local/bin/
 else
     echo "K9s already installed at $(which k9s)"
 fi
@@ -57,33 +58,26 @@ echo "=== Enabling MicroK8s ingress ==="
 microk8s enable ingress
 
 echo "=== Fixing Kubernetes Dashboard Ingress ==="
+# Delete old ingress if exists
+microk8s kubectl -n kube-system delete ingress kubernetes-dashboard-ingress --ignore-not-found
 
-# Delete previous ingress and TLS secret if they exist
-microk8s kubectl delete ingress kubernetes-dashboard-ingress -n kube-system || true
-microk8s kubectl delete secret dashboard-tls -n kube-system || true
+# Create TLS secret if missing
+if ! microk8s kubectl -n kube-system get secret dashboard-tls >/dev/null 2>&1; then
+    microk8s kubectl -n kube-system create secret tls dashboard-tls \
+        --cert=/var/snap/microk8s/current/certs/server.crt \
+        --key=/var/snap/microk8s/current/certs/server.key
+fi
 
-# Create self-signed certificate
-CERT_DIR="$HOME/.microk8s-dashboard-certs"
-mkdir -p "$CERT_DIR"
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout "$CERT_DIR/dashboard.key" \
-    -out "$CERT_DIR/dashboard.crt" \
-    -subj "/CN=dashboard.local/O=dashboard.local"
-
-# Create Kubernetes TLS secret
-microk8s kubectl create secret tls dashboard-tls \
-    --key="$CERT_DIR/dashboard.key" \
-    --cert="$CERT_DIR/dashboard.crt" -n kube-system
-
-# Apply ingress
+# Apply ingress YAML
 cat <<EOF | microk8s kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: kubernetes-dashboard-ingress
   namespace: kube-system
+  annotations:
+    kubernetes.io/ingress.class: "public"
 spec:
-  ingressClassName: public
   tls:
   - hosts:
     - dashboard.local
@@ -92,8 +86,8 @@ spec:
   - host: dashboard.local
     http:
       paths:
-      - path: /
-        pathType: Prefix
+      - pathType: Prefix
+        path: /
         backend:
           service:
             name: kubernetes-dashboard
@@ -102,8 +96,13 @@ spec:
 EOF
 
 echo "=== Adding /etc/hosts entry for dashboard.local ==="
+NODE_IP=$(hostname -I | awk '{print $1}')
+HOST_ENTRY="$NODE_IP dashboard.local"
 if ! grep -q "dashboard.local" /etc/hosts; then
-    echo "127.0.0.1 dashboard.local" | sudo tee -a /etc/hosts
+    echo "$HOST_ENTRY" | sudo tee -a /etc/hosts > /dev/null
+    echo "/etc/hosts updated: $HOST_ENTRY"
+else
+    echo "/etc/hosts already has an entry for dashboard.local"
 fi
 
 echo "=== K9s Installation & Dashboard Ingress Fix Complete ==="
