@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # Full MicroK8s Setup Script for Ubuntu
-# Includes dashboard, ingress, hostpath storage, admin-user token
+# Includes dashboard, ingress, hostpath storage, admin-user token fix
 # Adds system-wide kubectl symlink
-# Exposes dashboard via NGINX Ingress with TLS
-# Updates /etc/hosts for dashboard.local
+# Exposes dashboard via NGINX Ingress
 
 set -e
 
@@ -45,6 +44,12 @@ microk8s config > ~/.kube/config
 sudo chown -R $USER_NAME ~/.kube
 chmod 600 ~/.kube/config
 
+echo "=== Setting up kubectl alias ==="
+if ! grep -q 'alias kubectl="microk8s kubectl"' ~/.bashrc; then
+    echo 'alias kubectl="microk8s kubectl"' >> ~/.bashrc
+fi
+alias kubectl="$MICROK8S_KUBECTL"
+
 echo "=== Creating system-wide kubectl symlink ==="
 if [ ! -f /usr/local/bin/kubectl ]; then
     sudo ln -s /snap/bin/microk8s.kubectl /usr/local/bin/kubectl
@@ -57,8 +62,17 @@ for addon in "${ADDONS[@]}"; do
     sudo microk8s enable $addon
 done
 
+# Wait for ingress controller to be ready
+echo "=== Waiting for ingress controller to be ready ==="
+until $MICROK8S_KUBECTL -n ingress get pods -l app.kubernetes.io/name=nginx-ingress-microk8s -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
+    echo "Waiting for ingress controller..."
+    sleep 5
+done
+echo "Ingress controller is running."
+
+# Dashboard namespace
 DASHBOARD_NS="kube-system"
-echo "Dashboard namespace: $DASHBOARD_NS"
+echo "Dashboard namespace detected: $DASHBOARD_NS"
 
 echo "=== Creating admin-user for Dashboard ==="
 $MICROK8S_KUBECTL apply -f - <<EOF
@@ -88,13 +102,7 @@ until $MICROK8S_KUBECTL -n $DASHBOARD_NS get pods -l k8s-app=kubernetes-dashboar
     sleep 5
 done
 
-echo "=== Waiting for ingress controller to be ready ==="
-until $MICROK8S_KUBECTL -n ingress get pods -l app=nginx-ingress-microk8s -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
-    echo "Waiting for ingress controller..."
-    sleep 5
-done
-
-echo "=== Creating TLS secret for dashboard ==="
+echo "=== Creating TLS secret for dashboard if missing ==="
 if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
     $MICROK8S_KUBECTL -n $DASHBOARD_NS create secret tls dashboard-tls \
         --cert=/var/snap/microk8s/current/certs/server.crt \
@@ -111,7 +119,6 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
-  ingressClassName: public
   tls:
   - hosts:
     - dashboard.local
@@ -129,17 +136,16 @@ spec:
               number: 443
 EOF
 
-NODE_IP=$(hostname -I | awk '{print $1}')
-
 # Add /etc/hosts entry
+NODE_IP=$(hostname -I | awk '{print $1}')
 if ! grep -q "dashboard.local" /etc/hosts; then
-    echo "Adding dashboard.local -> $NODE_IP in /etc/hosts"
-    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
+    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts > /dev/null
+    echo "Added $NODE_IP dashboard.local to /etc/hosts"
 else
     echo "/etc/hosts already has an entry for dashboard.local"
 fi
 
-echo "=== Waiting for admin-user token ==="
+echo "=== Waiting for admin-user token to be ready ==="
 TOKEN=""
 for i in {1..12}; do
     SECRET_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}' || true)
