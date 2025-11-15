@@ -12,16 +12,13 @@ echo "=== Installing required packages ==="
 sudo apt update
 sudo apt install -y curl tar jq openssl ca-certificates gnupg apt-transport-https
 
-# Remove old broken xenial repo if present
-sudo rm -f /etc/apt/sources.list.d/kubernetes.list
+# Remove any old broken kubernetes list (xenial) to prevent 404 errors
+sudo rm -f /etc/apt/sources.list.d/kubernetes.list || true
 
-# Install kubectl using correct repo for current Ubuntu
-echo "=== Installing kubectl ==="
-curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/kubernetes-archive-keyring.gpg
-UBUNTU_CODENAME=$(lsb_release -cs)
-echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-${UBUNTU_CODENAME} main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
-sudo apt update
-sudo apt install -y kubectl
+echo "=== Installing kubectl via snap if missing ==="
+if ! command -v kubectl &> /dev/null; then
+    sudo snap install kubectl --classic
+fi
 
 echo "=== Ensuring user is in microk8s group ==="
 sudo usermod -aG microk8s $USER
@@ -40,7 +37,6 @@ fi
 
 echo "=== Making 'k' command work immediately ==="
 alias k='microk8s kubectl'
-# Make it available for current shell
 export -f k || true
 echo "Run 'k' now to launch K9s in this shell."
 
