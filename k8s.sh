@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # Full MicroK8s Setup Script for Ubuntu
-# Installs MicroK8s, enables addons, sets up dashboard access
-# Auto-writes kubeconfig, prints dashboard URL and token at the end
-# Adds system-wide kubectl symlink for convenience
-# Compatible with NGINX ingress and CoreDNS
+# Ensures kubectl, MicroK8s addons, dashboard, admin-user, NodePort access
+# Fixes admin-user secret retrieval for token login
+# Adds system-wide kubectl symlink
 
 set -e
 
@@ -54,52 +53,21 @@ alias kubectl="$MICROK8S_KUBECTL"
 echo "=== Creating system-wide kubectl symlink ==="
 if [ ! -f /usr/local/bin/kubectl ]; then
     sudo ln -s /snap/bin/microk8s.kubectl /usr/local/bin/kubectl
-    echo "Symlink created: /usr/local/bin/kubectl → /snap/bin/microk8s.kubectl"
 fi
 
 echo "=== Enabling MicroK8s addons ==="
-# Determine dashboard addon name
-if microk8s status --help | grep -q "kubedashboard"; then
-    DASHBOARD_ADDON="kubedashboard"
-else
-    DASHBOARD_ADDON="dashboard"
-fi
-
-ADDONS=(dns $DASHBOARD_ADDON ingress metrics-server storage hostpath-storage)
-
+ADDONS=(dns dashboard ingress metrics-server storage hostpath-storage)
 for addon in "${ADDONS[@]}"; do
     echo "--- Enabling $addon ---"
     sudo microk8s enable $addon
 done
 
-echo "Using dashboard addon: $DASHBOARD_ADDON"
-
-# Determine the actual dashboard namespace dynamically
+# Determine dashboard namespace
 if $MICROK8S_KUBECTL get ns kubernetes-dashboard >/dev/null 2>&1; then
     DASHBOARD_NS="kubernetes-dashboard"
-elif $MICROK8S_KUBECTL get ns kube-system >/dev/null 2>&1; then
-    DASHBOARD_NS="kube-system"
 else
-    echo "Waiting for dashboard namespace to appear..."
-    RETRIES=12
-    while [ $RETRIES -gt 0 ]; do
-        if $MICROK8S_KUBECTL get ns kubernetes-dashboard >/dev/null 2>&1; then
-            DASHBOARD_NS="kubernetes-dashboard"
-            break
-        elif $MICROK8S_KUBECTL get ns kube-system >/dev/null 2>&1; then
-            DASHBOARD_NS="kube-system"
-            break
-        fi
-        sleep 5
-        ((RETRIES--))
-        echo "Waiting for dashboard namespace... retries left: $RETRIES"
-    done
-    if [ -z "$DASHBOARD_NS" ]; then
-        echo "ERROR: Dashboard namespace not found after waiting."
-        exit 1
-    fi
+    DASHBOARD_NS="kube-system"
 fi
-
 echo "Dashboard namespace detected: $DASHBOARD_NS"
 
 echo "=== Creating admin-user for Dashboard ==="
@@ -126,40 +94,29 @@ subjects:
   namespace: $DASHBOARD_NS
 EOF
 
-if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get sa admin-user >/dev/null 2>&1; then
-    $MICROK8S_KUBECTL apply -f $ADMIN_USER_FILE >/dev/null
-    echo "Admin-user created."
-else
-    echo "Admin-user already exists."
-fi
+$MICROK8S_KUBECTL apply -f $ADMIN_USER_FILE >/dev/null
 
-echo ""
 echo "=== Exposing Dashboard via NodePort ==="
-SERVICE_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc -o jsonpath='{.items[0].metadata.name}' || true)
-
-if [ -n "$SERVICE_NAME" ]; then
-    $MICROK8S_KUBECTL -n $DASHBOARD_NS patch service $SERVICE_NAME -p '{"spec":{"type":"NodePort"}}' >/dev/null 2>&1 || true
-fi
-
-# Wait a few seconds for NodePort to appear
+SERVICE_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc -o jsonpath='{.items[0].metadata.name}')
+$MICROK8S_KUBECTL -n $DASHBOARD_NS patch service $SERVICE_NAME -p '{"spec":{"type":"NodePort"}}' >/dev/null 2>&1
 sleep 5
 
 NODE_PORT=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc $SERVICE_NAME -o jsonpath='{.spec.ports[0].nodePort}')
 NODE_IP=$(hostname -I | awk '{print $1}')
 
-# Wait for admin-user secret to exist
-echo "=== Waiting for admin-user secret to be created ==="
-RETRIES=12  # max 12*5s = 60s
+# Wait for the admin-user secret to exist
+echo "=== Waiting for admin-user token secret ==="
 TOKEN=""
-while [ $RETRIES -gt 0 ]; do
-    ADMIN_SECRET=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}' || true)
+for i in {1..12}; do
+    ADMIN_SECRET=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret \
+        -o jsonpath='{.items[?(@.metadata.annotations.kubernetes\.io/service-account\.name=="admin-user")].metadata.name}' || true)
     if [ -n "$ADMIN_SECRET" ]; then
-        TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS describe secret $ADMIN_SECRET | grep '^token' | awk '{print $2}')
+        TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS describe secret $ADMIN_SECRET \
+            | grep '^token' | awk '{print $2}')
         break
     fi
+    echo "Waiting for admin-user secret... attempt $i/12"
     sleep 5
-    ((RETRIES--))
-    echo "Waiting for admin-user secret... retries left: $RETRIES"
 done
 
 if [ -z "$TOKEN" ]; then
