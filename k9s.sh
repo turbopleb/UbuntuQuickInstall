@@ -17,11 +17,20 @@ else
     echo "You need to log out and back in for group changes to take effect."
 fi
 
-echo "=== Verifying MicroK8s access ==="
-if microk8s status --wait-ready >/dev/null 2>&1; then
-    echo "MicroK8s is running"
-else
-    echo "MicroK8s is not running. Please start MicroK8s."
+echo "=== Waiting for MicroK8s to be ready ==="
+READY=0
+for i in {1..24}; do
+    if microk8s status --wait-ready >/dev/null 2>&1; then
+        READY=1
+        echo "MicroK8s is running."
+        break
+    else
+        echo "Waiting for MicroK8s... ($i/24)"
+        sleep 5
+    fi
+done
+if [ $READY -eq 0 ]; then
+    echo "Error: MicroK8s is not ready. Exiting."
     exit 1
 fi
 
@@ -53,13 +62,27 @@ fi
 echo "=== Setting up kubeconfig for MicroK8s ==="
 mkdir -p ~/.kube
 microk8s config > ~/.kube/config
+sudo chown $USER ~/.kube/config
 chmod 600 ~/.kube/config
-echo "Kubeconfig written to ~/.kube/config"
 
-echo ""
-echo "=============================================="
-echo " K9s Installation Complete"
-echo "----------------------------------------------"
+echo "=== Ensuring ingress is enabled and ready ==="
+microk8s enable ingress >/dev/null 2>&1 || true
+INGRESS_READY=0
+for i in {1..24}; do
+    if microk8s kubectl -n ingress get pods -l app.kubernetes.io/name=ingress-nginx --field-selector=status.phase=Running 2>/dev/null | grep -q 'Running'; then
+        INGRESS_READY=1
+        echo "Ingress controller is running."
+        break
+    else
+        echo "Waiting for ingress controller... ($i/24)"
+        sleep 5
+    fi
+done
+if [ $INGRESS_READY -eq 0 ]; then
+    echo "Warning: Ingress controller not ready yet."
+fi
+
+echo "=== K9s Installation & Dashboard Ingress Fix Complete ==="
 echo "Run 'k' or 'k9s' to launch K9s."
-echo "MicroK8s kubeconfig is ready at ~/.kube/config"
-echo "=============================================="
+echo "Dashboard URL: https://dashboard.local"
+echo "MicroK8s kubeconfig is ready."
