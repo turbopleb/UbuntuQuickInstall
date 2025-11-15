@@ -4,6 +4,7 @@
 # Sets up MicroK8s with dashboard, ingress, storage, and admin-user
 # Exposes dashboard via NGINX Ingress
 # Updates /etc/hosts with dashboard.local
+# Waits for dashboard and ingress pods to be ready
 
 set -e
 
@@ -84,6 +85,12 @@ EOF
 echo "=== Waiting for dashboard pod to be ready ==="
 until $MICROK8S_KUBECTL -n $DASHBOARD_NS get pods -l k8s-app=kubernetes-dashboard -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
     echo "Waiting for dashboard pod..."
+    sleep 5
+done
+
+echo "=== Waiting for ingress controller pod to be ready ==="
+until $MICROK8S_KUBECTL -n ingress get pods -l name=nginx-ingress-microk8s-controller -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
+    echo "Waiting for ingress controller pod..."
     sleep 5
 done
 
