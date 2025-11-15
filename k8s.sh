@@ -3,6 +3,7 @@
 # Full MicroK8s Setup Script for Ubuntu
 # Installs MicroK8s, enables addons, sets up dashboard access
 # Auto-writes kubeconfig, prints dashboard URL and token at the end
+# Adds system-wide kubectl symlink for convenience
 # Compatible with NGINX ingress and CoreDNS
 
 set -e
@@ -50,8 +51,13 @@ if ! grep -q 'alias kubectl="microk8s kubectl"' ~/.bashrc; then
 fi
 alias kubectl="$MICROK8S_KUBECTL"
 
-echo "=== Enabling MicroK8s addons ==="
+echo "=== Creating system-wide kubectl symlink ==="
+if [ ! -f /usr/local/bin/kubectl ]; then
+    sudo ln -s /snap/bin/microk8s.kubectl /usr/local/bin/kubectl
+    echo "Symlink created: /usr/local/bin/kubectl → /snap/bin/microk8s.kubectl"
+fi
 
+echo "=== Enabling MicroK8s addons ==="
 # Determine dashboard addon name
 if microk8s status --help | grep -q "kubedashboard"; then
     DASHBOARD_ADDON="kubedashboard"
