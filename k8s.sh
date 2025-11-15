@@ -3,7 +3,7 @@
 # Full MicroK8s Setup Script for Ubuntu
 # Includes dashboard, ingress, hostpath storage, admin-user token fix
 # Adds system-wide kubectl symlink
-# Exposes dashboard via NGINX Ingress
+# Exposes dashboard via NGINX Ingress with TLS
 
 set -e
 
@@ -69,7 +69,6 @@ until $MICROK8S_KUBECTL -n ingress get pods -l app.kubernetes.io/name=ingress-ng
 done
 echo "Ingress controller is running."
 
-# Dashboard namespace
 DASHBOARD_NS="kube-system"
 echo "Dashboard namespace detected: $DASHBOARD_NS"
 
@@ -101,9 +100,16 @@ until $MICROK8S_KUBECTL -n $DASHBOARD_NS get pods -l k8s-app=kubernetes-dashboar
     sleep 5
 done
 
-echo "=== Creating Ingress for Dashboard with correct host IP ==="
+echo "=== Creating TLS secret for dashboard ==="
+if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
+    $MICROK8S_KUBECTL -n $DASHBOARD_NS create secret tls dashboard-tls \
+        --cert=/var/snap/microk8s/current/certs/server.crt \
+        --key=/var/snap/microk8s/current/certs/server.key
+fi
+
 NODE_IP=$(hostname -I | awk '{print $1}')
 
+echo "=== Creating Ingress for Dashboard with TLS ==="
 $MICROK8S_KUBECTL apply -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -113,6 +119,10 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
+  tls:
+  - hosts:
+    - dashboard.local
+    secretName: dashboard-tls
   rules:
   - host: dashboard.local
     http:
@@ -126,7 +136,7 @@ spec:
               number: 443
 EOF
 
-# Add /etc/hosts entry
+echo "=== Adding /etc/hosts entry ==="
 if ! grep -q "dashboard.local" /etc/hosts; then
     echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
     echo "Added dashboard.local -> $NODE_IP in /etc/hosts"
@@ -159,7 +169,7 @@ echo "----------------------------------------------"
 echo "kubectl is ready. Test with:"
 echo "    kubectl get nodes"
 echo ""
-echo "Kubernetes Dashboard URL via Ingress:"
+echo "Kubernetes Dashboard URL via Ingress (HTTPS):"
 echo "    https://dashboard.local"
 echo ""
 echo "Dashboard Admin Token:"
