@@ -10,7 +10,7 @@ INGRESS_NS="ingress"
 
 echo "=== Installing required packages (curl, tar, jq, openssl, ca-certificates) ==="
 sudo apt update -y
-sudo apt install -y curl tar jq openssl ca-certificates gnupg apt-transport-https
+sudo apt install -y curl tar jq openssl ca-certificates gnupg apt-transport-https lsb-release
 
 # ------------------------
 # Install kubectl properly
@@ -18,6 +18,7 @@ sudo apt install -y curl tar jq openssl ca-certificates gnupg apt-transport-http
 echo "=== Installing kubectl ==="
 if ! command -v kubectl >/dev/null 2>&1; then
     DISTRO=$(lsb_release -cs)
+    # Only supported by official kubernetes repo: bionic, focal, jammy, kinetic
     case "$DISTRO" in
         bionic|focal|jammy|kinetic) ;;
         *) DISTRO="focal" ;;
