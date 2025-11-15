@@ -1,8 +1,7 @@
 #!/bin/bash
 
 # Full MicroK8s Setup Script for Ubuntu
-# Ensures kubectl, MicroK8s addons, dashboard, admin-user, NodePort access
-# Fixes admin-user secret retrieval for token login
+# Includes dashboard, ingress, hostpath storage, admin-user token fix
 # Adds system-wide kubectl symlink
 
 set -e
@@ -70,15 +69,22 @@ else
 fi
 echo "Dashboard namespace detected: $DASHBOARD_NS"
 
-echo "=== Creating admin-user for Dashboard ==="
-ADMIN_USER_FILE="/tmp/admin-user.yaml"
-
-cat <<EOF > $ADMIN_USER_FILE
+echo "=== Creating admin-user and token secret for Dashboard ==="
+$MICROK8S_KUBECTL apply -f - <<EOF
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: admin-user
   namespace: $DASHBOARD_NS
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: admin-user-token
+  annotations:
+    kubernetes.io/service-account.name: admin-user
+  namespace: $DASHBOARD_NS
+type: kubernetes.io/service-account-token
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -94,8 +100,6 @@ subjects:
   namespace: $DASHBOARD_NS
 EOF
 
-$MICROK8S_KUBECTL apply -f $ADMIN_USER_FILE >/dev/null
-
 echo "=== Exposing Dashboard via NodePort ==="
 SERVICE_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc -o jsonpath='{.items[0].metadata.name}')
 $MICROK8S_KUBECTL -n $DASHBOARD_NS patch service $SERVICE_NAME -p '{"spec":{"type":"NodePort"}}' >/dev/null 2>&1
@@ -104,18 +108,14 @@ sleep 5
 NODE_PORT=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc $SERVICE_NAME -o jsonpath='{.spec.ports[0].nodePort}')
 NODE_IP=$(hostname -I | awk '{print $1}')
 
-# Wait for the admin-user secret to exist
-echo "=== Waiting for admin-user token secret ==="
+echo "=== Waiting for admin-user token to be ready ==="
 TOKEN=""
 for i in {1..12}; do
-    ADMIN_SECRET=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret \
-        -o jsonpath='{.items[?(@.metadata.annotations.kubernetes\.io/service-account\.name=="admin-user")].metadata.name}' || true)
-    if [ -n "$ADMIN_SECRET" ]; then
-        TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS describe secret $ADMIN_SECRET \
-            | grep '^token' | awk '{print $2}')
+    TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret admin-user-token -o jsonpath='{.data.token}' 2>/dev/null | base64 --decode || true)
+    if [ -n "$TOKEN" ]; then
         break
     fi
-    echo "Waiting for admin-user secret... attempt $i/12"
+    echo "Waiting for admin-user token... attempt $i/12"
     sleep 5
 done
 
