@@ -17,10 +17,19 @@ else
     echo "You need to log out and back in for group changes to take effect."
 fi
 
+echo "=== Verifying MicroK8s access ==="
+if microk8s status --wait-ready >/dev/null 2>&1; then
+    echo "MicroK8s is running"
+else
+    echo "MicroK8s is not running. Please start MicroK8s."
+    exit 1
+fi
+
 echo "=== Detecting system architecture ==="
 ARCH=$(uname -m)
-TARGET="amd64"
-if [[ "$ARCH" != "x86_64" ]]; then
+if [[ "$ARCH" == "x86_64" ]]; then
+    TARGET="amd64"
+else
     TARGET="$ARCH"
 fi
 echo "Architecture detected: $ARCH → K9s target: $TARGET"
@@ -44,6 +53,9 @@ fi
 echo "=== Setting up kubeconfig for MicroK8s ==="
 mkdir -p ~/.kube
 microk8s config > ~/.kube/config
+chmod 600 ~/.kube/config
 
+echo ""
 echo "=== K9s Installation Complete ==="
 echo "Run 'k' or 'k9s' to launch K9s."
+echo "MicroK8s kubeconfig is ready."
