@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Full MicroK8s Setup Script for Ubuntu
-# Includes kubectl alias, all core addons, dashboard external access
+# Includes kubectl alias, addons, external dashboard access
+# Auto-writes kubeconfig and prints dashboard URL + token
 
 set -e
 
@@ -25,22 +26,29 @@ echo "=== Ensuring user is in microk8s group ==="
 if ! groups $USER_NAME | grep -q "\bmicrok8s\b"; then
     echo "Adding $USER_NAME to microk8s group..."
     sudo usermod -a -G microk8s $USER_NAME
+
+    mkdir -p ~/.kube
     sudo chown -R $USER_NAME ~/.kube
+
     echo "Reloading group membership..."
     exec sg microk8s "$0 $@"
     exit
 fi
 
-echo "=== Ensuring MicroK8s is ready ==="
+echo "=== Waiting for MicroK8s to be ready ==="
 sudo microk8s status --wait-ready >/dev/null
 echo "MicroK8s is ready."
 
+echo "=== Setting up ~/.kube/config ==="
+mkdir -p ~/.kube
+microk8s config > ~/.kube/config
+sudo chown -R $USER_NAME ~/.kube
+chmod 600 ~/.kube/config
+
 echo "=== Setting up kubectl alias ==="
-# Add alias for interactive shells
 if ! grep -q 'alias kubectl="microk8s kubectl"' ~/.bashrc; then
     echo 'alias kubectl="microk8s kubectl"' >> ~/.bashrc
 fi
-# Also set temporary alias for this script/session
 alias kubectl="$MICROK8S_KUBECTL"
 
 echo "=== Enabling MicroK8s addons ==="
@@ -50,29 +58,84 @@ for addon in "${ADDONS[@]}"; do
     sudo microk8s enable $addon
 done
 
+echo "=== Ensuring admin-user exists for Dashboard ==="
+ADMIN_USER_FILE="/tmp/admin-user.yaml"
+
+cat <<EOF > $ADMIN_USER_FILE
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-user
+  namespace: kubernetes-dashboard
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-user-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: admin-user
+  namespace: kubernetes-dashboard
+EOF
+
+# Apply admin-user if missing
+if ! $MICROK8S_KUBECTL -n kubernetes-dashboard get sa admin-user >/dev/null 2>&1; then
+    echo "Creating admin-user..."
+    $MICROK8S_KUBECTL apply -f $ADMIN_USER_FILE >/dev/null
+else
+    echo "admin-user already exists."
+fi
+
 echo "=== Making Kubernetes Dashboard externally accessible ==="
 DASHBOARD_NS="kubernetes-dashboard"
-SERVICE_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc -o jsonpath='{.items[0].metadata.name}')
+SERVICE_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc -o jsonpath='{.items[0].metadata.name}' || true)
 
 if [ -n "$SERVICE_NAME" ]; then
-    echo "Patching Dashboard service $SERVICE_NAME to NodePort..."
-    $MICROK8S_KUBECTL -n $DASHBOARD_NS patch service $SERVICE_NAME -p '{"spec": {"type": "NodePort"}}'
-    echo "Dashboard service patched successfully."
+    echo "Patching Dashboard service to NodePort..."
+    $MICROK8S_KUBECTL -n $DASHBOARD_NS patch service $SERVICE_NAME -p '{"spec":{"type":"NodePort"}}' >/dev/null 2>&1 || true
 else
-    echo "Warning: Kubernetes Dashboard service not found in $DASHBOARD_NS namespace."
-    echo "You may need to wait a few minutes for the dashboard pod to be fully deployed."
+    echo "Dashboard service not detected yet, waiting 10 seconds..."
+    sleep 10
+fi
+
+echo "=== Retrieving Dashboard NodePort ==="
+NODE_PORT=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc -o jsonpath='{.items[0].spec.ports[0].nodePort}')
+NODE_IP=$(hostname -I | awk '{print $1}')
+
+echo ""
+echo "--------------------------------------------"
+echo " Kubernetes Dashboard is available at:"
+echo ""
+echo "    👉  https://$NODE_IP:$NODE_PORT"
+echo ""
+echo "--------------------------------------------"
+echo ""
+
+echo "=== Retrieving Dashboard Admin Token ==="
+sleep 2
+
+ADMIN_SECRET=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}')
+
+if [ -n "$ADMIN_SECRET" ]; then
+    TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS describe secret $ADMIN_SECRET | grep '^token' | awk '{print $2}')
+
+    echo "--------------------------------------------"
+    echo " Dashboard Login Token:"
+    echo ""
+    echo "$TOKEN"
+    echo ""
+    echo "--------------------------------------------"
+else
+    echo "ERROR: admin-user token not found."
+    echo "Dashboard may still be initializing."
 fi
 
 echo ""
-echo "=== MANUAL STEPS / NOTES ==="
-echo "1. MicroK8s is installed and ready."
-echo "2. Use 'kubectl' (alias for 'microk8s kubectl') for all commands."
-echo "3. Dashboard is exposed externally via NodePort. You can get the port with:"
-echo "   kubectl -n kubernetes-dashboard get service"
-echo "4. To access dashboard, generate token:"
-echo "   kubectl -n kubernetes-dashboard get secret | grep admin-user"
-echo "   kubectl -n kubernetes-dashboard describe secret <secret-name>"
-echo "5. If you add a new user to MicroK8s, run:"
-echo "   sudo usermod -a -G microk8s <username>"
-echo "   sudo chown -R <username> ~/.kube"
-echo "   newgrp microk8s (or log out/in)"
+echo "=== SETUP COMPLETE ==="
+echo "MicroK8s is fully installed and configured."
+echo "Use:  kubectl get nodes"
+echo ""
