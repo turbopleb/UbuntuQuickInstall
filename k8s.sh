@@ -3,62 +3,73 @@ set -e
 
 USER_NAME=$(whoami)
 
-echo "=== Checking microk8s group ==="
+echo "=== Updating system packages ==="
+sudo apt update -y
+sudo apt upgrade -y
+
+echo "=== Installing snapd (if missing) ==="
+sudo apt install -y snapd
+
+echo "=== Installing MicroK8s ==="
+sudo snap install microk8s --classic
+
+echo "=== Ensuring microk8s group exists ==="
 if ! getent group microk8s >/dev/null; then
     echo "Creating microk8s group..."
     sudo groupadd microk8s
 fi
 
-echo "=== Adding $USER_NAME to microk8s group ==="
+echo "=== Adding user '$USER_NAME' to microk8s group ==="
 sudo usermod -aG microk8s $USER_NAME
 
 echo "=== Ensuring ~/.kube exists ==="
-mkdir -p ~/.kube
+mkdir -p $HOME/.kube
 
 echo "=== Fixing permissions ==="
 sudo chown -R $USER_NAME:$USER_NAME ~/.kube
-sudo chown -R $USER_NAME:$USER_NAME /var/snap/microk8s || true
+sudo chown -R $USER_NAME:$USER_NAME /var/snap/microk8s
 
-echo "=== Running cluster setup inside microk8s group ==="
-sg microk8s <<'EOF'
+echo "=== Applying new group membership ==="
+newgrp microk8s <<EOF
 
-echo "=== Starting MicroK8s ==="
-microk8s status --wait-ready || microk8s start
+echo "=== Waiting for MicroK8s to become ready ==="
+microk8s status --wait-ready
 
-echo "=== Enabling core addons only ==="
+echo "=== Enabling required core addons (DNS + storage only) ==="
 microk8s enable dns
-microk8s enable storage
+microk8s enable hostpath-storage
 
-echo "=== Waiting for core components ==="
+echo "=== Waiting for kube-system core components ==="
+wait_for_ready() {
+    NS=$1
+    LABEL=$2
 
-# Helper function
-wait_for_label() {
-    NS="$1"
-    LABEL="$2"
-
-    echo "Checking pods in namespace: $NS with label: $LABEL"
-    microk8s kubectl -n "$NS" get pods -l "$LABEL" --no-headers || true
-
-    echo -n "Waiting for pods ($LABEL) in $NS to become Ready..."
-    microk8s kubectl -n "$NS" wait --for=condition=Ready pod -l "$LABEL" --timeout=300s
+    echo "Checking pods in: \$NS (label \$LABEL)"
+    until microk8s kubectl get pods -n \$NS -l \$LABEL --no-headers 2>/dev/null | grep -q "Running"; do
+        echo -n "."
+        sleep 2
+    done
     echo " OK"
 }
 
-# Required Kubernetes components
-wait_for_label kube-system k8s-app=kube-dns
-wait_for_label kube-system component=kube-apiserver
-wait_for_label kube-system component=kube-controller-manager
-wait_for_label kube-system component=kube-scheduler
-wait_for_label kube-system k8s-app=kube-proxy
+wait_for_ready kube-system "k8s-app=kube-dns"
+wait_for_ready kube-system "component=kube-apiserver"
+wait_for_ready kube-system "component=kube-controller-manager"
+wait_for_ready kube-system "component=kube-scheduler"
+wait_for_ready kube-system "k8s-app=kube-proxy"
 
 echo "=== Waiting for default StorageClass ==="
-microk8s kubectl wait sc microk8s-hostpath --for=condition=Exists --timeout=60s || true
+until microk8s kubectl get storageclass | grep -q "(default)"; do
+    echo -n "."
+    sleep 2
+done
+echo " OK"
 
 echo "=== Cluster Ready ==="
-microk8s kubectl get nodes -o wide
-microk8s kubectl get pods -A -o wide
+microk8s kubectl get nodes
+microk8s kubectl get pods -A
 
 EOF
 
-echo "=== MicroK8s base cluster setup complete ==="
-echo "You may now run your separate dashboard/ingress scripts."
+echo "=== DONE ==="
+echo "You may need to logout/login once for group membership to fully apply."
