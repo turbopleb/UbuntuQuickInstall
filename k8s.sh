@@ -68,26 +68,33 @@ done
 
 echo "Using dashboard addon: $DASHBOARD_ADDON"
 
-# Set dashboard namespace depending on addon
-if [ "$DASHBOARD_ADDON" = "kubedashboard" ]; then
+# Determine the actual dashboard namespace dynamically
+if $MICROK8S_KUBECTL get ns kubernetes-dashboard >/dev/null 2>&1; then
+    DASHBOARD_NS="kubernetes-dashboard"
+elif $MICROK8S_KUBECTL get ns kube-system >/dev/null 2>&1; then
     DASHBOARD_NS="kube-system"
 else
-    DASHBOARD_NS="kubernetes-dashboard"
+    echo "Waiting for dashboard namespace to appear..."
+    RETRIES=10
+    while [ $RETRIES -gt 0 ]; do
+        if $MICROK8S_KUBECTL get ns kubernetes-dashboard >/dev/null 2>&1; then
+            DASHBOARD_NS="kubernetes-dashboard"
+            break
+        elif $MICROK8S_KUBECTL get ns kube-system >/dev/null 2>&1; then
+            DASHBOARD_NS="kube-system"
+            break
+        fi
+        sleep 5
+        ((RETRIES--))
+        echo "Waiting for dashboard namespace... retries left: $RETRIES"
+    done
+    if [ -z "$DASHBOARD_NS" ]; then
+        echo "ERROR: Dashboard namespace not found after waiting."
+        exit 1
+    fi
 fi
 
-echo ""
-echo "=== Waiting for dashboard namespace to exist ==="
-RETRIES=10
-until $MICROK8S_KUBECTL get ns $DASHBOARD_NS >/dev/null 2>&1 || [ $RETRIES -le 0 ]; do
-    echo "Waiting for namespace $DASHBOARD_NS..."
-    sleep 5
-    ((RETRIES--))
-done
-
-if ! $MICROK8S_KUBECTL get ns $DASHBOARD_NS >/dev/null 2>&1; then
-    echo "ERROR: Namespace $DASHBOARD_NS not found. Dashboard may not be ready."
-    exit 1
-fi
+echo "Dashboard namespace detected: $DASHBOARD_NS"
 
 echo "=== Creating admin-user for Dashboard ==="
 ADMIN_USER_FILE="/tmp/admin-user.yaml"
