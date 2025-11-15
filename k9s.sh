@@ -10,12 +10,15 @@ INGRESS_NS="ingress"
 
 echo "=== Installing required packages (curl, tar, jq, openssl, ca-certificates) ==="
 sudo apt update -y
-sudo apt install -y curl tar jq openssl ca-certificates apt-transport-https gnupg
+sudo apt install -y curl tar jq openssl ca-certificates apt-transport-https gnupg lsb-release
 
 echo "=== Installing kubectl ==="
 if ! command -v kubectl >/dev/null 2>&1; then
+    DISTRO=$(lsb_release -cs)
+    # fallback if Ubuntu codename not supported
+    [[ "$DISTRO" != "focal" && "$DISTRO" != "jammy" && "$DISTRO" != "kinetic" ]] && DISTRO="focal"
     curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/kubernetes-archive-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+    echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-$DISTRO main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
     sudo apt update -y
     sudo apt install -y kubectl
 fi
@@ -54,7 +57,6 @@ sudo microk8s enable dashboard || true
 echo "=== Exposing Kubernetes Dashboard as NodePort ==="
 $MICROK8S_KUBECTL -n $DASHBOARD_NS patch svc kubernetes-dashboard -p '{"spec":{"type":"NodePort"}}'
 
-# Wait for dashboard service
 echo "=== Waiting for Kubernetes Dashboard service ==="
 END=$((SECONDS + WAIT_TIMEOUT))
 while ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get svc kubernetes-dashboard >/dev/null 2>&1; do
