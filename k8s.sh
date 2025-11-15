@@ -75,7 +75,7 @@ elif $MICROK8S_KUBECTL get ns kube-system >/dev/null 2>&1; then
     DASHBOARD_NS="kube-system"
 else
     echo "Waiting for dashboard namespace to appear..."
-    RETRIES=10
+    RETRIES=12
     while [ $RETRIES -gt 0 ]; do
         if $MICROK8S_KUBECTL get ns kubernetes-dashboard >/dev/null 2>&1; then
             DASHBOARD_NS="kubernetes-dashboard"
@@ -141,11 +141,22 @@ sleep 5
 NODE_PORT=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc $SERVICE_NAME -o jsonpath='{.spec.ports[0].nodePort}')
 NODE_IP=$(hostname -I | awk '{print $1}')
 
-ADMIN_SECRET=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}')
+# Wait for admin-user secret to exist
+echo "=== Waiting for admin-user secret to be created ==="
+RETRIES=12  # max 12*5s = 60s
+TOKEN=""
+while [ $RETRIES -gt 0 ]; do
+    ADMIN_SECRET=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}' || true)
+    if [ -n "$ADMIN_SECRET" ]; then
+        TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS describe secret $ADMIN_SECRET | grep '^token' | awk '{print $2}')
+        break
+    fi
+    sleep 5
+    ((RETRIES--))
+    echo "Waiting for admin-user secret... retries left: $RETRIES"
+done
 
-if [ -n "$ADMIN_SECRET" ]; then
-    TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS describe secret $ADMIN_SECRET | grep '^token' | awk '{print $2}')
-else
+if [ -z "$TOKEN" ]; then
     TOKEN="<token not available yet>"
 fi
 
