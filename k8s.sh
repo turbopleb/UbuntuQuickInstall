@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Full MicroK8s Setup Script for Ubuntu
-# Includes kubectl alias, addons, external dashboard access
-# Auto-writes kubeconfig and prints dashboard URL + token
-# Compatible with NGINX Ingress and CoreDNS
+# Installs MicroK8s, enables addons, sets up dashboard access
+# Auto-writes kubeconfig, prints dashboard URL and token at the end
+# Compatible with NGINX ingress and CoreDNS
 
 set -e
 
@@ -27,10 +27,8 @@ echo "=== Ensuring user is in microk8s group ==="
 if ! groups $USER_NAME | grep -q "\bmicrok8s\b"; then
     echo "Adding $USER_NAME to microk8s group..."
     sudo usermod -a -G microk8s $USER_NAME
-
     mkdir -p ~/.kube
     sudo chown -R $USER_NAME ~/.kube
-
     echo "Reloading group membership..."
     exec sg microk8s "$0 $@"
     exit
@@ -77,7 +75,21 @@ else
     DASHBOARD_NS="kubernetes-dashboard"
 fi
 
-echo "=== Ensuring admin-user exists for Dashboard ==="
+echo ""
+echo "=== Waiting for dashboard namespace to exist ==="
+RETRIES=10
+until $MICROK8S_KUBECTL get ns $DASHBOARD_NS >/dev/null 2>&1 || [ $RETRIES -le 0 ]; do
+    echo "Waiting for namespace $DASHBOARD_NS..."
+    sleep 5
+    ((RETRIES--))
+done
+
+if ! $MICROK8S_KUBECTL get ns $DASHBOARD_NS >/dev/null 2>&1; then
+    echo "ERROR: Namespace $DASHBOARD_NS not found. Dashboard may not be ready."
+    exit 1
+fi
+
+echo "=== Creating admin-user for Dashboard ==="
 ADMIN_USER_FILE="/tmp/admin-user.yaml"
 
 cat <<EOF > $ADMIN_USER_FILE
@@ -102,58 +114,44 @@ subjects:
 EOF
 
 if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get sa admin-user >/dev/null 2>&1; then
-    echo "Creating admin-user..."
     $MICROK8S_KUBECTL apply -f $ADMIN_USER_FILE >/dev/null
+    echo "Admin-user created."
 else
-    echo "admin-user already exists."
+    echo "Admin-user already exists."
 fi
 
-echo "=== Making Kubernetes Dashboard externally accessible ==="
+echo ""
+echo "=== Exposing Dashboard via NodePort ==="
 SERVICE_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc -o jsonpath='{.items[0].metadata.name}' || true)
 
 if [ -n "$SERVICE_NAME" ]; then
-    echo "Patching Dashboard service to NodePort..."
     $MICROK8S_KUBECTL -n $DASHBOARD_NS patch service $SERVICE_NAME -p '{"spec":{"type":"NodePort"}}' >/dev/null 2>&1 || true
-else
-    echo "Dashboard service not detected yet, waiting 10 seconds..."
-    sleep 10
 fi
 
-echo "=== Retrieving Dashboard NodePort ==="
-NODE_PORT=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc -o jsonpath='{.items[0].spec.ports[0].nodePort}')
+# Wait a few seconds for NodePort to appear
+sleep 5
+
+NODE_PORT=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc $SERVICE_NAME -o jsonpath='{.spec.ports[0].nodePort}')
 NODE_IP=$(hostname -I | awk '{print $1}')
-
-echo ""
-echo "--------------------------------------------"
-echo " Kubernetes Dashboard is available at:"
-echo ""
-echo "    👉  https://$NODE_IP:$NODE_PORT"
-echo ""
-echo "--------------------------------------------"
-echo ""
-
-echo "=== Retrieving Dashboard Admin Token ==="
-sleep 2
 
 ADMIN_SECRET=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}')
 
 if [ -n "$ADMIN_SECRET" ]; then
     TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS describe secret $ADMIN_SECRET | grep '^token' | awk '{print $2}')
-
-    echo "--------------------------------------------"
-    echo " Dashboard Login Token:"
-    echo ""
-    echo "$TOKEN"
-    echo ""
-    echo "--------------------------------------------"
 else
-    echo "ERROR: admin-user token not found."
-    echo "Dashboard may still be initializing."
+    TOKEN="<token not available yet>"
 fi
 
 echo ""
-echo "=== SETUP COMPLETE ==="
-echo "MicroK8s is fully installed and configured."
+echo "=============================================="
+echo " MicroK8s Setup Complete"
+echo "----------------------------------------------"
 echo "kubectl is ready. Test with:"
 echo "    kubectl get nodes"
-echo "Dashboard URL and token are printed above."
+echo ""
+echo "Kubernetes Dashboard URL:"
+echo "    https://$NODE_IP:$NODE_PORT"
+echo ""
+echo "Dashboard Admin Token:"
+echo "    $TOKEN"
+echo "=============================================="
