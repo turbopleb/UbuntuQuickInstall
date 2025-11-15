@@ -1,8 +1,10 @@
 #!/bin/bash
+
 # Full MicroK8s Setup Script for Ubuntu
-# Includes dashboard, ingress, hostpath storage, admin-user token fix
-# Ensures Nginx Ingress service exists
-# Waits for all required pods to be running before finishing
+# Ensures dashboard and ingress are fully functional
+# Waits for pods and services
+# Fixes /etc/hosts for dashboard.local
+# Outputs admin-user token
 
 set -e
 
@@ -19,95 +21,71 @@ fi
 
 echo "=== Installing MicroK8s if missing ==="
 if ! snap list | grep -q microk8s; then
-    sudo snap install microk8s --classic
+    sudo snap install microk8s --classic --channel=1.32/stable
 fi
 
 echo "=== Ensuring user is in microk8s group ==="
 if ! groups $USER_NAME | grep -q "\bmicrok8s\b"; then
-    echo "Adding $USER_NAME to microk8s group..."
     sudo usermod -a -G microk8s $USER_NAME
-    mkdir -p ~/.kube
-    sudo chown -R $USER_NAME ~/.kube
-    echo "Reloading group membership..."
-    exec sg microk8s "$0 $@"
-    exit
+    echo "Reload group membership by logging out and in."
+    exit 0
 fi
 
 echo "=== Waiting for MicroK8s to be ready ==="
 sudo microk8s status --wait-ready >/dev/null
 echo "MicroK8s is ready."
 
-echo "=== Setting up ~/.kube/config ==="
+echo "=== Setting up kubeconfig ==="
 mkdir -p ~/.kube
 microk8s config > ~/.kube/config
 sudo chown -R $USER_NAME ~/.kube
 chmod 600 ~/.kube/config
 
-echo "=== Setting up kubectl alias ==="
+echo "=== Setting up kubectl alias and system-wide symlink ==="
 if ! grep -q 'alias kubectl="microk8s kubectl"' ~/.bashrc; then
     echo 'alias kubectl="microk8s kubectl"' >> ~/.bashrc
 fi
 alias kubectl="$MICROK8S_KUBECTL"
-
-echo "=== Creating system-wide kubectl symlink ==="
 if [ ! -f /usr/local/bin/kubectl ]; then
     sudo ln -s /snap/bin/microk8s.kubectl /usr/local/bin/kubectl
 fi
 
-echo "=== Enabling MicroK8s addons ==="
+echo "=== Enabling required MicroK8s addons ==="
 ADDONS=(dns dashboard ingress metrics-server storage hostpath-storage)
 for addon in "${ADDONS[@]}"; do
     echo "--- Enabling $addon ---"
     sudo microk8s enable $addon
 done
 
-# Ensure Nginx ingress service exists
-echo "=== Ensuring Nginx Ingress service exists ==="
-INGRESS_NS="ingress"
-SERVICE_NAME="nginx-ingress-microk8s-controller"
-
-if ! $MICROK8S_KUBECTL -n $INGRESS_NS get svc $SERVICE_NAME >/dev/null 2>&1; then
-    echo "Ingress service missing. Creating $SERVICE_NAME..."
-    cat <<EOF | $MICROK8S_KUBECTL -n $INGRESS_NS apply -f -
-apiVersion: v1
-kind: Service
-metadata:
-  name: $SERVICE_NAME
-  namespace: $INGRESS_NS
-spec:
-  type: NodePort
-  selector:
-    app: nginx-ingress-microk8s
-  ports:
-    - name: http
-      protocol: TCP
-      port: 80
-      targetPort: 80
-    - name: https
-      protocol: TCP
-      port: 443
-      targetPort: 443
-EOF
-fi
-
+# Wait for all required pods to be ready
 echo "=== Waiting for all required pods to be ready ==="
-REQUIRED_NS=("kube-system" "ingress")
+REQUIRED_NS=("kube-system" "ingress" "default")
 for ns in "${REQUIRED_NS[@]}"; do
-    PODS=$($MICROK8S_KUBECTL -n $ns get pods -o jsonpath='{.items[*].metadata.name}')
-    for pod in $PODS; do
-        echo -n "Waiting for pod $pod in namespace $ns..."
+    pods=$($MICROK8S_KUBECTL -n $ns get pods -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' 2>/dev/null || true)
+    for pod in $($MICROK8S_KUBECTL -n $ns get pods --no-headers -o custom-columns=":metadata.name"); do
+        echo "Waiting for pod $pod in namespace $ns..."
         until [[ "$($MICROK8S_KUBECTL -n $ns get pod $pod -o jsonpath='{.status.phase}')" == "Running" ]]; do
-            echo -n "."
-            sleep 5
+            sleep 2
         done
-        echo " Ready!"
     done
 done
 
-# Dashboard namespace
-DASHBOARD_NS="kube-system"
-echo "Dashboard namespace detected: $DASHBOARD_NS"
+# Ensure ingress service exists and is running
+echo "=== Ensuring NGINX ingress service exists and running ==="
+if ! $MICROK8S_KUBECTL -n ingress get svc | grep -q nginx-ingress-microk8s-controller; then
+    echo "Ingress service missing, restarting ingress addon..."
+    sudo microk8s disable ingress
+    sudo microk8s enable ingress
+fi
+until $MICROK8S_KUBECTL -n ingress get pods -l app=nginx-ingress-microk8s-controller -o jsonpath='{.items[0].status.phase}' | grep -q "Running"; do
+    echo "Waiting for NGINX ingress pod..."
+    sleep 2
+done
+echo "NGINX ingress pod is running."
 
+DASHBOARD_NS="kube-system"
+
+# Create admin-user for dashboard
 echo "=== Creating admin-user for Dashboard ==="
 $MICROK8S_KUBECTL apply -f - <<EOF
 apiVersion: v1
@@ -130,7 +108,44 @@ subjects:
   namespace: $DASHBOARD_NS
 EOF
 
-echo "=== Waiting for admin-user token to be ready ==="
+# Wait for dashboard pod
+echo "=== Waiting for Kubernetes Dashboard pod to be ready ==="
+until $MICROK8S_KUBECTL -n $DASHBOARD_NS get pods -l k8s-app=kubernetes-dashboard -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
+    sleep 2
+done
+
+# Fix /etc/hosts
+echo "=== Fixing /etc/hosts for dashboard.local ==="
+NODE_IP=$(hostname -I | awk '{print $1}')
+sudo sed -i '/dashboard.local/d' /etc/hosts
+echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
+
+# Create ingress for dashboard
+echo "=== Creating Ingress for Kubernetes Dashboard ==="
+$MICROK8S_KUBECTL apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kubernetes-dashboard-ingress
+  namespace: $DASHBOARD_NS
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: dashboard.local
+    http:
+      paths:
+      - pathType: Prefix
+        path: /
+        backend:
+          service:
+            name: kubernetes-dashboard
+            port:
+              number: 443
+EOF
+
+# Wait for admin-user token
+echo "=== Waiting for admin-user token ==="
 TOKEN=""
 for i in {1..12}; do
     SECRET_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}' || true)
@@ -146,35 +161,6 @@ done
 
 if [ -z "$TOKEN" ]; then
     TOKEN="<token not available yet>"
-fi
-
-echo "=== Creating Dashboard Ingress ==="
-$MICROK8S_KUBECTL apply -f - <<EOF
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: kubernetes-dashboard-ingress
-  namespace: $DASHBOARD_NS
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
-spec:
-  rules:
-  - host: dashboard.local
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: kubernetes-dashboard
-            port:
-              number: 443
-EOF
-
-# Add entry to /etc/hosts
-NODE_IP=$(hostname -I | awk '{print $1}')
-if ! grep -q "dashboard.local" /etc/hosts; then
-    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
 fi
 
 echo ""
