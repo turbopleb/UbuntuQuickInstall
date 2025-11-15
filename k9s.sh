@@ -2,7 +2,8 @@
 set -e
 
 echo "=== Updating packages ==="
-sudo apt update -y && sudo apt upgrade -y
+sudo apt update -y
+sudo apt upgrade -y
 
 echo "=== Installing required packages (curl, tar, jq, openssl) ==="
 sudo apt install -y curl tar jq openssl
@@ -13,21 +14,15 @@ if groups $USER | grep &>/dev/null '\bmicrok8s\b'; then
 else
     echo "Adding user $USER to microk8s group..."
     sudo usermod -aG microk8s $USER
-    echo "Log out and back in for group changes to take effect."
-fi
-
-echo "=== Verifying MicroK8s access ==="
-if microk8s status --wait-ready >/dev/null 2>&1; then
-    echo "MicroK8s is running"
-else
-    echo "MicroK8s is not running. Please start MicroK8s."
-    exit 1
+    echo "You need to log out and back in for group changes to take effect."
 fi
 
 echo "=== Detecting system architecture ==="
 ARCH=$(uname -m)
 TARGET="amd64"
-[[ "$ARCH" != "x86_64" ]] && TARGET="$ARCH"
+if [[ "$ARCH" != "x86_64" ]]; then
+    TARGET="$ARCH"
+fi
 echo "Architecture detected: $ARCH → K9s target: $TARGET"
 
 echo "=== Installing K9s if missing ==="
@@ -41,7 +36,7 @@ else
     echo "K9s already installed at $(which k9s)"
 fi
 
-echo "=== Adding alias 'k' for K9s ==="
+echo "=== Adding alias 'k' for K9s (if missing) ==="
 if ! grep -q "alias k=" ~/.bashrc; then
     echo "alias k='k9s'" >> ~/.bashrc
 fi
@@ -49,7 +44,6 @@ fi
 echo "=== Setting up kubeconfig for MicroK8s ==="
 mkdir -p ~/.kube
 microk8s config > ~/.kube/config
-chmod 600 ~/.kube/config
 
 echo "=== K9s Installation Complete ==="
 echo "Run 'k' or 'k9s' to launch K9s."
