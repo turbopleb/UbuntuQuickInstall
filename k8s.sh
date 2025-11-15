@@ -29,23 +29,22 @@ echo "=== Fixing permissions ==="
 sudo chown -R $USER_NAME:$USER_NAME ~/.kube
 sudo chown -R $USER_NAME:$USER_NAME /var/snap/microk8s
 
-echo "=== Applying new group membership ==="
-newgrp microk8s <<EOF
+echo "=== Reload group membership ==="
+newgrp microk8s
 
 echo "=== Waiting for MicroK8s to become ready ==="
 microk8s status --wait-ready
 
-echo "=== Enabling required core addons (DNS + storage only) ==="
+echo "=== Enabling required core addons (DNS + storage) ==="
 microk8s enable dns
 microk8s enable hostpath-storage
 
 echo "=== Waiting for kube-system core components ==="
 wait_for_ready() {
-    NS=$1
-    LABEL=$2
-
-    echo "Checking pods in: \$NS (label \$LABEL)"
-    until microk8s kubectl get pods -n \$NS -l \$LABEL --no-headers 2>/dev/null | grep -q "Running"; do
+    NS="$1"
+    LABEL="$2"
+    echo -n "Waiting for pods in $NS (label=$LABEL) "
+    until microk8s kubectl get pods -n "$NS" -l "$LABEL" --no-headers 2>/dev/null | grep -q "Running"; do
         echo -n "."
         sleep 2
     done
@@ -68,8 +67,6 @@ echo " OK"
 echo "=== Cluster Ready ==="
 microk8s kubectl get nodes
 microk8s kubectl get pods -A
-
-EOF
 
 echo "=== DONE ==="
 echo "You may need to logout/login once for group membership to fully apply."
