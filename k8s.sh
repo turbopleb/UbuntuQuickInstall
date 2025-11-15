@@ -2,6 +2,7 @@
 set -e
 
 USER_NAME=$(whoami)
+NEEDS_NEWGRP=false
 
 echo "=== Updating system packages ==="
 sudo apt update
@@ -23,17 +24,21 @@ if ! getent group microk8s >/dev/null; then
 fi
 
 echo "=== Adding user '$USER_NAME' to microk8s group ==="
-sudo usermod -aG microk8s $USER_NAME
+if ! groups $USER_NAME | grep -q microk8s; then
+    sudo usermod -aG microk8s $USER_NAME
+    NEEDS_NEWGRP=true
+fi
 
 echo "=== Ensuring ~/.kube exists ==="
 mkdir -p ~/.kube
-
-echo "=== Fixing permissions for MicroK8s ==="
 sudo chown -R $USER_NAME ~/.kube
 sudo chown -R $USER_NAME /var/snap/microk8s || true
 
-echo "=== IMPORTANT: If this is the first time adding the user to microk8s group, run: ==="
-echo "newgrp microk8s"
+# If user just got added to microk8s group, use newgrp
+if [ "$NEEDS_NEWGRP" = true ]; then
+    echo "=== Switching to microk8s group using newgrp ==="
+    exec sg microk8s "$0 $*"
+fi
 
 echo "=== Waiting for MicroK8s to become ready ==="
 microk8s status --wait-ready
@@ -43,26 +48,20 @@ microk8s enable dns
 microk8s enable hostpath-storage
 
 echo "=== Waiting for kube-system core components ==="
-CORE_PODS=("kube-dns" "kube-apiserver" "kube-controller-manager" "kube-scheduler" "kube-proxy")
+CORE_LABELS=("k8s-app=kube-dns" "component=kube-apiserver" "component=kube-controller-manager" "component=kube-scheduler" "k8s-app=kube-proxy")
 
-for pod_label in "${CORE_PODS[@]}"; do
-    echo "Waiting for pods with label '$pod_label' to be Ready..."
-    until microk8s kubectl -n kube-system get pods -l k8s-app=$pod_label -o jsonpath='{.items[*].status.containerStatuses[*].ready}' 2>/dev/null | grep -q true; do
-        sleep 2
+for label in "${CORE_LABELS[@]}"; do
+    echo "Waiting for pods with label '$label' to be Ready..."
+    spinner="/|\\-"
+    i=0
+    until microk8s kubectl -n kube-system get pods -l $label -o jsonpath='{.items[*].status.containerStatuses[*].ready}' 2>/dev/null | grep -q true; do
+        i=$(( (i+1) %4 ))
+        printf "\r${spinner:$i:1} "
+        sleep 1
     done
-    echo "$pod_label pods are Ready"
+    printf "\rPods with label '$label' are Ready!        \n"
 done
 
 echo "=== Cluster Ready! ==="
-
-echo "=== Printing Kubernetes dashboard admin token (if dashboard enabled) ==="
-if microk8s kubectl -n kube-system get secret | grep -q kubernetes-dashboard-token; then
-    SECRET_NAME=$(microk8s kubectl -n kube-system get secret | grep kubernetes-dashboard-token | awk '{print $1}')
-    TOKEN=$(microk8s kubectl -n kube-system describe secret $SECRET_NAME | grep '^token:' | awk '{print $2}')
-    echo "Dashboard Admin Token:"
-    echo $TOKEN
-else
-    echo "Dashboard token not found (dashboard not enabled)"
-fi
-
-echo "=== Setup complete! Your next script can enable dashboard and ingress ==="
+echo "DNS and hostpath storage are enabled."
+echo "Metrics-server, dashboard, and ingress can be enabled later via your next script."
