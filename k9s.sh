@@ -82,7 +82,21 @@ if [ $INGRESS_READY -eq 0 ]; then
     echo "Warning: Ingress controller not ready yet."
 fi
 
-echo "=== K9s Installation & Dashboard Ingress Fix Complete ==="
+echo "=== Adding /etc/hosts entry for dashboard.local ==="
+NODE_IP=$(hostname -I | awk '{print $1}')
+HOST_ENTRY="$NODE_IP dashboard.local"
+
+# Remove old 127.0.0.1 entry if it exists
+sudo sed -i.bak '/127\.0\.0\.1\s\+dashboard\.local/d' /etc/hosts
+
+if ! grep -q "dashboard.local" /etc/hosts; then
+    echo "$HOST_ENTRY" | sudo tee -a /etc/hosts > /dev/null
+    echo "/etc/hosts updated: $HOST_ENTRY"
+else
+    echo "/etc/hosts already has an entry for dashboard.local"
+fi
+
+echo "=== K9s Installation & Dashboard Access Fix Complete ==="
 echo "Run 'k' or 'k9s' to launch K9s."
 echo "Dashboard URL: https://dashboard.local"
 echo "MicroK8s kubeconfig is ready."
