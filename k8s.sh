@@ -3,6 +3,7 @@
 # Full MicroK8s Setup Script for Ubuntu
 # Includes dashboard, ingress, hostpath storage, admin-user token fix
 # Adds system-wide kubectl symlink
+# Exposes dashboard via NGINX Ingress
 
 set -e
 
@@ -61,30 +62,17 @@ for addon in "${ADDONS[@]}"; do
     sudo microk8s enable $addon
 done
 
-# Determine dashboard namespace
-if $MICROK8S_KUBECTL get ns kubernetes-dashboard >/dev/null 2>&1; then
-    DASHBOARD_NS="kubernetes-dashboard"
-else
-    DASHBOARD_NS="kube-system"
-fi
+# Dashboard namespace
+DASHBOARD_NS="kube-system"
 echo "Dashboard namespace detected: $DASHBOARD_NS"
 
-echo "=== Creating admin-user and token secret for Dashboard ==="
+echo "=== Creating admin-user for Dashboard ==="
 $MICROK8S_KUBECTL apply -f - <<EOF
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: admin-user
   namespace: $DASHBOARD_NS
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: admin-user-token
-  annotations:
-    kubernetes.io/service-account.name: admin-user
-  namespace: $DASHBOARD_NS
-type: kubernetes.io/service-account-token
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -100,20 +88,52 @@ subjects:
   namespace: $DASHBOARD_NS
 EOF
 
-echo "=== Exposing Dashboard via NodePort ==="
-SERVICE_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc -o jsonpath='{.items[0].metadata.name}')
-$MICROK8S_KUBECTL -n $DASHBOARD_NS patch service $SERVICE_NAME -p '{"spec":{"type":"NodePort"}}' >/dev/null 2>&1
-sleep 5
+echo "=== Waiting for dashboard pod to be ready ==="
+until $MICROK8S_KUBECTL -n $DASHBOARD_NS get pods -l k8s-app=kubernetes-dashboard -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
+    echo "Waiting for dashboard pod..."
+    sleep 5
+done
 
-NODE_PORT=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc $SERVICE_NAME -o jsonpath='{.spec.ports[0].nodePort}')
+echo "=== Creating Ingress for Dashboard ==="
+$MICROK8S_KUBECTL apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kubernetes-dashboard-ingress
+  namespace: $DASHBOARD_NS
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: dashboard.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: kubernetes-dashboard
+            port:
+              number: 443
+EOF
+
 NODE_IP=$(hostname -I | awk '{print $1}')
+
+# Add entry to /etc/hosts
+if ! grep -q "dashboard.local" /etc/hosts; then
+    echo "Adding dashboard.local -> $NODE_IP in /etc/hosts"
+    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
+fi
 
 echo "=== Waiting for admin-user token to be ready ==="
 TOKEN=""
 for i in {1..12}; do
-    TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret admin-user-token -o jsonpath='{.data.token}' 2>/dev/null | base64 --decode || true)
-    if [ -n "$TOKEN" ]; then
-        break
+    SECRET_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}' || true)
+    if [ -n "$SECRET_NAME" ]; then
+        TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret $SECRET_NAME -o jsonpath='{.data.token}' 2>/dev/null | base64 --decode || true)
+        if [ -n "$TOKEN" ]; then
+            break
+        fi
     fi
     echo "Waiting for admin-user token... attempt $i/12"
     sleep 5
@@ -130,8 +150,8 @@ echo "----------------------------------------------"
 echo "kubectl is ready. Test with:"
 echo "    kubectl get nodes"
 echo ""
-echo "Kubernetes Dashboard URL:"
-echo "    https://$NODE_IP:$NODE_PORT"
+echo "Kubernetes Dashboard URL via Ingress:"
+echo "    https://dashboard.local"
 echo ""
 echo "Dashboard Admin Token:"
 echo "    $TOKEN"
