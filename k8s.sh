@@ -1,9 +1,7 @@
 #!/bin/bash
-
 # Full MicroK8s Setup Script for Ubuntu
 # Includes dashboard, ingress, hostpath storage, admin-user token fix
-# Adds system-wide kubectl symlink
-# Exposes dashboard via NGINX Ingress
+# Ensures Nginx Ingress service exists
 # Waits for all required pods to be running before finishing
 
 set -e
@@ -63,6 +61,50 @@ for addon in "${ADDONS[@]}"; do
     sudo microk8s enable $addon
 done
 
+# Ensure Nginx ingress service exists
+echo "=== Ensuring Nginx Ingress service exists ==="
+INGRESS_NS="ingress"
+SERVICE_NAME="nginx-ingress-microk8s-controller"
+
+if ! $MICROK8S_KUBECTL -n $INGRESS_NS get svc $SERVICE_NAME >/dev/null 2>&1; then
+    echo "Ingress service missing. Creating $SERVICE_NAME..."
+    cat <<EOF | $MICROK8S_KUBECTL -n $INGRESS_NS apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: $SERVICE_NAME
+  namespace: $INGRESS_NS
+spec:
+  type: NodePort
+  selector:
+    app: nginx-ingress-microk8s
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 443
+EOF
+fi
+
+echo "=== Waiting for all required pods to be ready ==="
+REQUIRED_NS=("kube-system" "ingress")
+for ns in "${REQUIRED_NS[@]}"; do
+    PODS=$($MICROK8S_KUBECTL -n $ns get pods -o jsonpath='{.items[*].metadata.name}')
+    for pod in $PODS; do
+        echo -n "Waiting for pod $pod in namespace $ns..."
+        until [[ "$($MICROK8S_KUBECTL -n $ns get pod $pod -o jsonpath='{.status.phase}')" == "Running" ]]; do
+            echo -n "."
+            sleep 5
+        done
+        echo " Ready!"
+    done
+done
+
+# Dashboard namespace
 DASHBOARD_NS="kube-system"
 echo "Dashboard namespace detected: $DASHBOARD_NS"
 
@@ -88,26 +130,25 @@ subjects:
   namespace: $DASHBOARD_NS
 EOF
 
-# --- Wait for all required pods to be Ready ---
-wait_for_pods() {
-    NAMESPACE=$1
-    shift
-    POD_NAMES=("$@")
-    for POD in "${POD_NAMES[@]}"; do
-        echo "Waiting for pod containing '$POD' in namespace $NAMESPACE..."
-        until microk8s kubectl -n "$NAMESPACE" get pods -o jsonpath='{.items[*].status.containerStatuses[*].ready}' 2>/dev/null | grep -q "true"; do
-            sleep 5
-        done
-    done
-}
+echo "=== Waiting for admin-user token to be ready ==="
+TOKEN=""
+for i in {1..12}; do
+    SECRET_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}' || true)
+    if [ -n "$SECRET_NAME" ]; then
+        TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret $SECRET_NAME -o jsonpath='{.data.token}' 2>/dev/null | base64 --decode || true)
+        if [ -n "$TOKEN" ]; then
+            break
+        fi
+    fi
+    echo "Waiting for admin-user token... attempt $i/12"
+    sleep 5
+done
 
-echo "=== Waiting for all required pods to be ready ==="
-# kube-system required pods
-wait_for_pods kube-system coredns kubernetes-dashboard metrics-server
-# ingress required pods
-wait_for_pods ingress nginx-ingress-microk8s
+if [ -z "$TOKEN" ]; then
+    TOKEN="<token not available yet>"
+fi
 
-echo "=== Creating Ingress for Dashboard ==="
+echo "=== Creating Dashboard Ingress ==="
 $MICROK8S_KUBECTL apply -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -130,31 +171,10 @@ spec:
               number: 443
 EOF
 
-# Fix /etc/hosts
+# Add entry to /etc/hosts
 NODE_IP=$(hostname -I | awk '{print $1}')
 if ! grep -q "dashboard.local" /etc/hosts; then
     echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
-    echo "/etc/hosts updated: $NODE_IP dashboard.local"
-else
-    echo "/etc/hosts already has an entry for dashboard.local"
-fi
-
-echo "=== Waiting for admin-user token to be ready ==="
-TOKEN=""
-for i in {1..12}; do
-    SECRET_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}' || true)
-    if [ -n "$SECRET_NAME" ]; then
-        TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret $SECRET_NAME -o jsonpath='{.data.token}' 2>/dev/null | base64 --decode || true)
-        if [ -n "$TOKEN" ]; then
-            break
-        fi
-    fi
-    echo "Waiting for admin-user token... attempt $i/12"
-    sleep 5
-done
-
-if [ -z "$TOKEN" ]; then
-    TOKEN="<token not available yet>"
 fi
 
 echo ""
