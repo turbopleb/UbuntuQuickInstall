@@ -3,8 +3,6 @@ set -e
 
 USER_NAME=$(whoami)
 MICROK8S_KUBECTL="microk8s kubectl"
-WAIT_TIMEOUT=300  # 5 minutes
-SLEEP_INTERVAL=5  # seconds
 DASHBOARD_NS="kube-system"
 INGRESS_NS="ingress"
 
@@ -12,58 +10,53 @@ echo "=== Installing required packages (curl, tar, jq, openssl, ca-certificates)
 sudo apt update -y
 sudo apt install -y curl tar jq openssl ca-certificates
 
-# Ensure user is in microk8s group
 echo "=== Ensuring user is in microk8s group ==="
-if ! groups "$USER_NAME" | grep -q '\bmicrok8s\b'; then
-    sudo usermod -aG microk8s "$USER_NAME"
-    echo "User added to microk8s group. Log out/in or run 'newgrp microk8s' for changes to take effect."
+if ! groups $USER_NAME | grep -q '\bmicrok8s\b'; then
+    echo "Adding user $USER_NAME to microk8s group..."
+    sudo usermod -aG microk8s $USER_NAME
+    echo "Group added. Run 'newgrp microk8s' in this shell to apply immediately."
 fi
 
-# Setup kubeconfig
 echo "=== Setting up kubeconfig for MicroK8s ==="
 mkdir -p ~/.kube
 microk8s config > ~/.kube/config
-export KUBECONFIG=~/.kube/config
 
-# Install K9s if missing
 echo "=== Installing K9s if missing ==="
 if ! command -v k9s >/dev/null 2>&1; then
-    ARCH=$(uname -m)
-    TARGET="amd64"
-    [[ "$ARCH" != "x86_64" ]] && TARGET="$ARCH"
+    echo "Downloading latest K9s..."
     LATEST=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | jq -r '.tag_name')
+    ARCH=$(uname -m)
+    if [[ "$ARCH" == "x86_64" ]]; then TARGET="amd64"; else TARGET="$ARCH"; fi
     curl -L https://github.com/derailed/k9s/releases/download/${LATEST}/k9s_Linux_${TARGET}.tar.gz -o /tmp/k9s.tar.gz
     tar -xzf /tmp/k9s.tar.gz -C /tmp
     sudo mv /tmp/k9s /usr/local/bin/
+else
+    echo "K9s already installed at $(which k9s)"
 fi
 
-# Make 'k' alias work immediately
 echo "=== Making 'k' command work immediately ==="
-alias k='k9s'
+# Define shell function for immediate use
+k() { k9s "$@"; }
 export -f k
 echo "Run 'k' now to launch K9s."
 
-# Enable dashboard and ingress
 echo "=== Enabling MicroK8s dashboard and ingress ==="
-sudo microk8s enable ingress
-timeout 30 bash -c 'until microk8s status --wait-ready; do sleep 1; done'
-sudo microk8s enable dashboard
+sudo microk8s enable ingress || true
+sudo microk8s enable dashboard || true
 
-# Expose dashboard as ClusterIP and create NodePort
-echo "=== Exposing Kubernetes Dashboard as ClusterIP + NodePort ==="
-sudo $MICROK8S_KUBECTL -n $DASHBOARD_NS patch svc kubernetes-dashboard -p '{"spec": {"type": "ClusterIP"}}'
+echo "=== Exposing Kubernetes Dashboard as NodePort ==="
+$MICROK8S_KUBECTL -n $DASHBOARD_NS patch svc kubernetes-dashboard \
+    -p '{"spec": {"type": "NodePort"}}'
 
-# Ensure TLS secret exists
 echo "=== Ensuring TLS secret for dashboard ==="
 if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
-    sudo $MICROK8S_KUBECTL -n $DASHBOARD_NS create secret tls dashboard-tls \
+    $MICROK8S_KUBECTL -n $DASHBOARD_NS create secret tls dashboard-tls \
         --cert=/var/snap/microk8s/current/certs/server.crt \
         --key=/var/snap/microk8s/current/certs/server.key
 fi
 
-# Apply ingress for dashboard.local
 echo "=== Applying ingress for dashboard.local ==="
-cat <<EOF | sudo $MICROK8S_KUBECTL apply -f -
+cat <<EOF | $MICROK8S_KUBECTL apply -f -
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -89,7 +82,6 @@ spec:
               number: 443
 EOF
 
-# Update /etc/hosts with node IP
 echo "=== Updating /etc/hosts with node IP for dashboard.local ==="
 NODE_IP=$(hostname -I | awk '{print $1}')
 HOST_ENTRY="$NODE_IP dashboard.local"
@@ -100,27 +92,6 @@ else
     echo "/etc/hosts already has an entry for dashboard.local"
 fi
 
-# Add MicroK8s self-signed cert to trusted certificates
-echo "=== Adding MicroK8s self-signed TLS to trusted certificates ==="
-sudo cp /var/snap/microk8s/current/certs/server.crt /usr/local/share/ca-certificates/microk8s-dashboard.crt
-sudo update-ca-certificates
-
-# Wait for ingress and dashboard pods to be Running
-echo "=== Waiting for ingress controller and dashboard pods to be Running ==="
-END=$((SECONDS+WAIT_TIMEOUT))
-while [ $SECONDS -lt $END ]; do
-    INGRESS_READY=$($MICROK8S_KUBECTL -n $INGRESS_NS get pod -l app=nginx-ingress-microk8s -o jsonpath='{.items[*].status.phase}')
-    DASHBOARD_READY=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get pod -l k8s-app=kubernetes-dashboard -o jsonpath='{.items[*].status.phase}')
-    if [[ "$INGRESS_READY" == *"Running"* && "$DASHBOARD_READY" == *"Running"* ]]; then
-        echo "Ingress controller and dashboard pods are running."
-        break
-    else
-        echo "Waiting for ingress/dashboard pods..."
-        sleep $SLEEP_INTERVAL
-    fi
-done
-
-# Final message
-echo "=== MicroK8s Dashboard should now be reachable ==="
-echo "URL: https://dashboard.local"
-echo "Run 'k' or 'k9s' to launch K9s immediately."
+echo "=== K9s & Dashboard setup complete ==="
+echo "Run 'k' to launch K9s."
+echo "Dashboard URL: https://dashboard.local (NodePort exposed, TLS enabled)"
