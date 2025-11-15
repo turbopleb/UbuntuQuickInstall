@@ -3,22 +3,21 @@ set -e
 
 USER_NAME=$(whoami)
 MICROK8S_KUBECTL="microk8s kubectl"
-WAIT_TIMEOUT=300  # 5 minutes
-SLEEP_INTERVAL=5  # seconds
+WAIT_TIMEOUT=300
+SLEEP_INTERVAL=5
 DASHBOARD_NS="kube-system"
 INGRESS_NS="ingress"
 
-echo "=== Installing required packages (curl, tar, jq, openssl, ca-certificates) ==="
+echo "=== Installing required packages (curl, tar, jq, openssl, ca-certificates, gnupg, apt-transport-https) ==="
 sudo apt update -y
 sudo apt install -y curl tar jq openssl ca-certificates gnupg apt-transport-https lsb-release
 
 # ------------------------
-# Install kubectl properly
+# Install kubectl dynamically (no xenial)
 # ------------------------
 echo "=== Installing kubectl ==="
 if ! command -v kubectl >/dev/null 2>&1; then
     DISTRO=$(lsb_release -cs)
-    # Only supported by official kubernetes repo: bionic, focal, jammy, kinetic
     case "$DISTRO" in
         bionic|focal|jammy|kinetic) ;;
         *) DISTRO="focal" ;;
@@ -31,9 +30,8 @@ fi
 
 echo "=== Ensuring user is in microk8s group ==="
 if ! groups $USER_NAME | grep -q '\bmicrok8s\b'; then
-    echo "Adding user $USER_NAME to microk8s group..."
     sudo usermod -aG microk8s $USER_NAME
-    echo "You need to log out and back in for group changes to take effect."
+    echo "User $USER_NAME added to microk8s group; log out/in required."
 fi
 
 echo "=== Setting up kubeconfig for MicroK8s ==="
@@ -47,9 +45,7 @@ echo "=== Installing K9s if missing ==="
 ARCH=$(uname -m)
 TARGET="amd64"
 [[ "$ARCH" != "x86_64" ]] && TARGET="$ARCH"
-
 if ! command -v k9s >/dev/null 2>&1; then
-    echo "Downloading latest K9s..."
     LATEST=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | jq -r '.tag_name')
     curl -L https://github.com/derailed/k9s/releases/download/${LATEST}/k9s_Linux_${TARGET}.tar.gz -o /tmp/k9s.tar.gz
     tar -xzf /tmp/k9s.tar.gz -C /tmp
@@ -63,7 +59,7 @@ if ! type k >/dev/null 2>&1; then
     alias k='k9s'
     export -f k
 fi
-echo "Run 'k' now to launch K9s in this shell."
+echo "Run 'k' to launch K9s in this shell."
 
 # ------------------------
 # Enable dashboard and ingress
@@ -79,14 +75,12 @@ echo "=== Exposing Kubernetes Dashboard as NodePort ==="
 $MICROK8S_KUBECTL -n $DASHBOARD_NS patch svc kubernetes-dashboard -p '{"spec": {"type": "NodePort"}}'
 
 # ------------------------
-# Wait for service to be available
+# Wait for service
 # ------------------------
 echo "=== Waiting for Kubernetes Dashboard service ==="
 until $MICROK8S_KUBECTL -n $DASHBOARD_NS get svc kubernetes-dashboard >/dev/null 2>&1; do
-    echo "Waiting for kubernetes-dashboard service..."
     sleep 2
 done
-
 DASH_NODEPORT=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc kubernetes-dashboard -o jsonpath='{.spec.ports[0].nodePort}')
 NODE_IP=$(hostname -I | awk '{print $1}')
 echo "Dashboard NodePort: https://$NODE_IP:$DASH_NODEPORT"
