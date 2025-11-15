@@ -3,7 +3,7 @@
 # Full MicroK8s Setup Script for Ubuntu
 # Includes dashboard, ingress, hostpath storage, admin-user token fix
 # Adds system-wide kubectl symlink
-# Exposes dashboard via NGINX Ingress with TLS
+# Exposes dashboard via NGINX Ingress
 
 set -e
 
@@ -62,13 +62,24 @@ for addon in "${ADDONS[@]}"; do
     sudo microk8s enable $addon
 done
 
-echo "=== Waiting for ingress controller to be ready ==="
-until $MICROK8S_KUBECTL -n ingress get pods -l app.kubernetes.io/name=ingress-nginx -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
-    echo "Waiting for ingress controller..."
-    sleep 5
+# --- Wait for ingress controller with timeout ---
+echo "=== Waiting for ingress controller to be ready (max 2 min) ==="
+READY=0
+for i in {1..24}; do
+    if microk8s kubectl -n ingress get pods -l app.kubernetes.io/name=ingress-nginx --field-selector=status.phase=Running 2>/dev/null | grep -q 'Running'; then
+        READY=1
+        echo "Ingress controller is running."
+        break
+    else
+        echo "Waiting for ingress controller... ($i/24)"
+        sleep 5
+    fi
 done
-echo "Ingress controller is running."
+if [ $READY -eq 0 ]; then
+    echo "Warning: Ingress controller did not become ready in 2 minutes."
+fi
 
+# Dashboard namespace
 DASHBOARD_NS="kube-system"
 echo "Dashboard namespace detected: $DASHBOARD_NS"
 
@@ -100,16 +111,7 @@ until $MICROK8S_KUBECTL -n $DASHBOARD_NS get pods -l k8s-app=kubernetes-dashboar
     sleep 5
 done
 
-echo "=== Creating TLS secret for dashboard ==="
-if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
-    $MICROK8S_KUBECTL -n $DASHBOARD_NS create secret tls dashboard-tls \
-        --cert=/var/snap/microk8s/current/certs/server.crt \
-        --key=/var/snap/microk8s/current/certs/server.key
-fi
-
-NODE_IP=$(hostname -I | awk '{print $1}')
-
-echo "=== Creating Ingress for Dashboard with TLS ==="
+echo "=== Creating Ingress for Dashboard ==="
 $MICROK8S_KUBECTL apply -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -119,10 +121,6 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
-  tls:
-  - hosts:
-    - dashboard.local
-    secretName: dashboard-tls
   rules:
   - host: dashboard.local
     http:
@@ -136,12 +134,12 @@ spec:
               number: 443
 EOF
 
-echo "=== Adding /etc/hosts entry ==="
+NODE_IP=$(hostname -I | awk '{print $1}')
+
+# Add entry to /etc/hosts
 if ! grep -q "dashboard.local" /etc/hosts; then
+    echo "Adding dashboard.local -> $NODE_IP in /etc/hosts"
     echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
-    echo "Added dashboard.local -> $NODE_IP in /etc/hosts"
-else
-    echo "/etc/hosts already has an entry for dashboard.local"
 fi
 
 echo "=== Waiting for admin-user token to be ready ==="
@@ -169,7 +167,7 @@ echo "----------------------------------------------"
 echo "kubectl is ready. Test with:"
 echo "    kubectl get nodes"
 echo ""
-echo "Kubernetes Dashboard URL via Ingress (HTTPS):"
+echo "Kubernetes Dashboard URL via Ingress:"
 echo "    https://dashboard.local"
 echo ""
 echo "Dashboard Admin Token:"
