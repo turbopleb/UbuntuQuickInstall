@@ -10,20 +10,15 @@ INGRESS_NS="ingress"
 
 echo "=== Installing required packages (curl, tar, jq, openssl, ca-certificates, gnupg, apt-transport-https) ==="
 sudo apt update -y
-sudo apt install -y curl tar jq openssl ca-certificates gnupg apt-transport-https lsb-release
+sudo apt install -y curl tar jq openssl ca-certificates gnupg apt-transport-https
 
 # ------------------------
-# Install kubectl dynamically (no xenial)
+# Install kubectl (fixed repo)
 # ------------------------
 echo "=== Installing kubectl ==="
 if ! command -v kubectl >/dev/null 2>&1; then
-    DISTRO=$(lsb_release -cs)
-    case "$DISTRO" in
-        bionic|focal|jammy|kinetic) ;;
-        *) DISTRO="focal" ;;
-    esac
     curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/kubernetes-archive-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-$DISTRO main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+    echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
     sudo apt update -y
     sudo apt install -y kubectl
 fi
