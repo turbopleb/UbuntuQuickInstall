@@ -3,6 +3,7 @@
 # Full MicroK8s Setup Script for Ubuntu
 # Includes kubectl alias, addons, external dashboard access
 # Auto-writes kubeconfig and prints dashboard URL + token
+# Compatible with NGINX Ingress and CoreDNS
 
 set -e
 
@@ -52,11 +53,29 @@ fi
 alias kubectl="$MICROK8S_KUBECTL"
 
 echo "=== Enabling MicroK8s addons ==="
-ADDONS=(dns dashboard ingress metrics-server storage hostpath-storage)
+
+# Determine dashboard addon name
+if microk8s status --help | grep -q "kubedashboard"; then
+    DASHBOARD_ADDON="kubedashboard"
+else
+    DASHBOARD_ADDON="dashboard"
+fi
+
+ADDONS=(dns $DASHBOARD_ADDON ingress metrics-server storage hostpath-storage)
+
 for addon in "${ADDONS[@]}"; do
     echo "--- Enabling $addon ---"
     sudo microk8s enable $addon
 done
+
+echo "Using dashboard addon: $DASHBOARD_ADDON"
+
+# Set dashboard namespace depending on addon
+if [ "$DASHBOARD_ADDON" = "kubedashboard" ]; then
+    DASHBOARD_NS="kube-system"
+else
+    DASHBOARD_NS="kubernetes-dashboard"
+fi
 
 echo "=== Ensuring admin-user exists for Dashboard ==="
 ADMIN_USER_FILE="/tmp/admin-user.yaml"
@@ -66,7 +85,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: admin-user
-  namespace: kubernetes-dashboard
+  namespace: $DASHBOARD_NS
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -79,11 +98,10 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: admin-user
-  namespace: kubernetes-dashboard
+  namespace: $DASHBOARD_NS
 EOF
 
-# Apply admin-user if missing
-if ! $MICROK8S_KUBECTL -n kubernetes-dashboard get sa admin-user >/dev/null 2>&1; then
+if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get sa admin-user >/dev/null 2>&1; then
     echo "Creating admin-user..."
     $MICROK8S_KUBECTL apply -f $ADMIN_USER_FILE >/dev/null
 else
@@ -91,7 +109,6 @@ else
 fi
 
 echo "=== Making Kubernetes Dashboard externally accessible ==="
-DASHBOARD_NS="kubernetes-dashboard"
 SERVICE_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get svc -o jsonpath='{.items[0].metadata.name}' || true)
 
 if [ -n "$SERVICE_NAME" ]; then
@@ -137,5 +154,6 @@ fi
 echo ""
 echo "=== SETUP COMPLETE ==="
 echo "MicroK8s is fully installed and configured."
-echo "Use:  kubectl get nodes"
-echo ""
+echo "kubectl is ready. Test with:"
+echo "    kubectl get nodes"
+echo "Dashboard URL and token are printed above."
