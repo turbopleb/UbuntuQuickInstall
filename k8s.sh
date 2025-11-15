@@ -34,7 +34,7 @@ mkdir -p ~/.kube
 sudo chown -R $USER_NAME ~/.kube
 sudo chown -R $USER_NAME /var/snap/microk8s || true
 
-# If user just got added to microk8s group, use newgrp
+# Apply new group membership immediately if user was added
 if [ "$NEEDS_NEWGRP" = true ]; then
     echo "=== Switching to microk8s group using newgrp ==="
     exec sg microk8s "$0 $*"
@@ -47,33 +47,6 @@ echo "=== Enabling core addons (DNS + hostpath storage) ==="
 microk8s enable dns
 microk8s enable hostpath-storage
 
-echo "=== Checking kube-system core components ==="
-CORE_PODS=("kube-apiserver" "kube-controller-manager" "kube-scheduler" "kube-proxy" "coredns")
-
-for pod in "${CORE_PODS[@]}"; do
-    echo "Checking pod '$pod'..."
-    spinner="/|\\-"
-    i=0
-    for attempt in {1..30}; do
-        POD_STATUS=$(microk8s kubectl -n kube-system get pod -l "component=$pod" -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo "")
-        if [[ -z "$POD_STATUS" ]]; then
-            # Pod does not exist yet
-            printf "\r${spinner:$i:1} Waiting for pod '$pod' to appear..."
-        elif [[ "$POD_STATUS" == "Running" ]]; then
-            # Pod exists and running
-            echo "Pod '$pod' is running, continuing..."
-            break
-        elif [[ "$POD_STATUS" == "Pending" || "$POD_STATUS" == "Failed" || "$POD_STATUS" == "Evicted" ]]; then
-            # Pod exists but not ready, skip
-            echo "Pod '$pod' is $POD_STATUS, skipping check..."
-            break
-        fi
-        i=$(( (i+1) %4 ))
-        printf "\r${spinner:$i:1} "
-        sleep 2
-    done
-done
-
-echo "=== MicroK8s cluster is ready! ==="
+echo "=== MicroK8s setup complete! ==="
 echo "DNS and hostpath storage are enabled."
 echo "Other addons (dashboard, ingress, metrics-server, k9s) can be added later."
