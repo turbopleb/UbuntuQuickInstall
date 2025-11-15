@@ -41,23 +41,21 @@ export -f k
 echo "Run 'k' now to launch K9s in this shell."
 
 echo "=== Enabling MicroK8s dashboard and ingress ==="
-microk8s enable ingress || true
-microk8s enable dashboard || true
+sudo microk8s enable ingress || true
+sudo microk8s enable dashboard || true
 
 echo "=== Exposing Kubernetes Dashboard as NodePort ==="
-if microk8s kubectl -n $DASHBOARD_NS get service kubernetes-dashboard >/dev/null 2>&1; then
-    microk8s kubectl -n $DASHBOARD_NS patch svc kubernetes-dashboard -p '{"spec": {"type": "NodePort"}}'
-fi
+sudo microk8s kubectl -n $DASHBOARD_NS patch svc kubernetes-dashboard -p '{"spec": {"type": "NodePort"}}'
 
 echo "=== Ensuring TLS secret for dashboard ==="
-if ! microk8s kubectl -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
-    microk8s kubectl -n $DASHBOARD_NS create secret tls dashboard-tls \
+if ! sudo microk8s kubectl -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
+    sudo microk8s kubectl -n $DASHBOARD_NS create secret tls dashboard-tls \
         --cert=/var/snap/microk8s/current/certs/server.crt \
         --key=/var/snap/microk8s/current/certs/server.key
 fi
 
 echo "=== Applying ingress for dashboard.local ==="
-cat <<EOF | microk8s kubectl apply -f -
+cat <<EOF | sudo microk8s kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -94,20 +92,24 @@ echo "=== Adding dashboard.local cert to system trusted CA ==="
 sudo cp /var/snap/microk8s/current/certs/server.crt /usr/local/share/ca-certificates/dashboard-local.crt
 sudo update-ca-certificates
 
+echo "=== Getting NodePort for Kubernetes Dashboard ==="
+NODEPORT=$(sudo microk8s kubectl -n $DASHBOARD_NS get svc kubernetes-dashboard -o jsonpath='{.spec.ports[0].nodePort}')
+echo "Dashboard NodePort: $NODE_IP:$NODEPORT"
+
 echo "=== Generating Kubernetes Dashboard admin token ==="
-microk8s kubectl -n $DASHBOARD_NS create serviceaccount dashboard-admin || true
-microk8s kubectl -n $DASHBOARD_NS create clusterrolebinding dashboard-admin \
+sudo microk8s kubectl -n $DASHBOARD_NS create serviceaccount dashboard-admin || true
+sudo microk8s kubectl -n $DASHBOARD_NS create clusterrolebinding dashboard-admin \
     --clusterrole=cluster-admin \
     --serviceaccount=kube-system:dashboard-admin || true
 
 echo "Your Kubernetes Dashboard admin token is:"
-microk8s kubectl -n $DASHBOARD_NS get secret \
-  $(microk8s kubectl -n $DASHBOARD_NS get sa dashboard-admin -o jsonpath="{.secrets[0].name}") \
+sudo microk8s kubectl -n $DASHBOARD_NS get secret \
+  $(sudo microk8s kubectl -n $DASHBOARD_NS get sa dashboard-admin -o jsonpath="{.secrets[0].name}") \
   -o jsonpath="{.data.token}" | base64 -d
 echo
 
 echo "=== K9s & Dashboard Setup Complete ==="
 echo "Dashboard accessible at:"
-echo "  NodePort: https://$NODE_IP:<NodePort from 'microk8s kubectl -n kube-system get svc kubernetes-dashboard'>"
+echo "  NodePort: https://$NODE_IP:$NODEPORT"
 echo "  Ingress : https://dashboard.local"
 echo "Run 'k' to launch K9s immediately in this shell."
