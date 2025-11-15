@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Full MicroK8s Setup Script for Ubuntu
-# Includes dashboard, ingress, hostpath storage, admin-user token fix
-# Adds system-wide kubectl symlink
+# Sets up MicroK8s with dashboard, ingress, storage, and admin-user
 # Exposes dashboard via NGINX Ingress
+# Updates /etc/hosts with dashboard.local
 
 set -e
 
@@ -44,12 +44,6 @@ microk8s config > ~/.kube/config
 sudo chown -R $USER_NAME ~/.kube
 chmod 600 ~/.kube/config
 
-echo "=== Setting up kubectl alias ==="
-if ! grep -q 'alias kubectl="microk8s kubectl"' ~/.bashrc; then
-    echo 'alias kubectl="microk8s kubectl"' >> ~/.bashrc
-fi
-alias kubectl="$MICROK8S_KUBECTL"
-
 echo "=== Creating system-wide kubectl symlink ==="
 if [ ! -f /usr/local/bin/kubectl ]; then
     sudo ln -s /snap/bin/microk8s.kubectl /usr/local/bin/kubectl
@@ -62,9 +56,8 @@ for addon in "${ADDONS[@]}"; do
     sudo microk8s enable $addon
 done
 
-# Dashboard namespace
 DASHBOARD_NS="kube-system"
-echo "Dashboard namespace detected: $DASHBOARD_NS"
+echo "Dashboard namespace: $DASHBOARD_NS"
 
 echo "=== Creating admin-user for Dashboard ==="
 $MICROK8S_KUBECTL apply -f - <<EOF
@@ -104,6 +97,7 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
+  ingressClassName: public
   rules:
   - host: dashboard.local
     http:
@@ -118,14 +112,16 @@ spec:
 EOF
 
 NODE_IP=$(hostname -I | awk '{print $1}')
-
-# Add entry to /etc/hosts
+echo "=== Updating /etc/hosts ==="
+HOST_ENTRY="$NODE_IP dashboard.local"
 if ! grep -q "dashboard.local" /etc/hosts; then
-    echo "Adding dashboard.local -> $NODE_IP in /etc/hosts"
-    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
+    echo "Adding $HOST_ENTRY to /etc/hosts"
+    echo "$HOST_ENTRY" | sudo tee -a /etc/hosts > /dev/null
+else
+    echo "/etc/hosts already has an entry for dashboard.local"
 fi
 
-echo "=== Waiting for admin-user token to be ready ==="
+echo "=== Waiting for admin-user token ==="
 TOKEN=""
 for i in {1..12}; do
     SECRET_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}' || true)
@@ -150,7 +146,7 @@ echo "----------------------------------------------"
 echo "kubectl is ready. Test with:"
 echo "    kubectl get nodes"
 echo ""
-echo "Kubernetes Dashboard URL via Ingress:"
+echo "Dashboard URL via Ingress:"
 echo "    https://dashboard.local"
 echo ""
 echo "Dashboard Admin Token:"
