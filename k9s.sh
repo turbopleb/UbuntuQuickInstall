@@ -67,7 +67,8 @@ k9s:
 EOF
 
 echo ""
-echo "=== Installation Complete ==="
-echo "Run: k or k9s"
-echo "Default namespace set to kube-system (dashboard + metrics)"
-echo "MicroK8s kubeconfig is already set."
+echo "=============================================="
+echo " K9s installation complete."
+echo " Use 'k' or 'k9s' to start K9s."
+echo " It will default to the 'kube-system' namespace where the dashboard lives."
+echo "=============================================="
