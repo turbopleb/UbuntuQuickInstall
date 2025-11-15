@@ -8,6 +8,10 @@ SLEEP_INTERVAL=5
 DASHBOARD_NS="kube-system"
 INGRESS_NS="ingress"
 
+echo "=== Installing dependencies ==="
+sudo apt update -y
+sudo apt install -y curl jq ca-certificates
+
 echo "=== Ensuring user is in microk8s group ==="
 if ! groups "$USER_NAME" | grep -q '\bmicrok8s\b'; then
     echo "Adding user $USER_NAME to microk8s group..."
@@ -39,6 +43,9 @@ echo "Run 'k' now to launch K9s."
 echo "=== Enabling MicroK8s dashboard and ingress ==="
 sudo microk8s enable ingress
 sudo microk8s enable dashboard
+
+echo "=== Exposing Kubernetes Dashboard correctly ==="
+sudo $MICROK8S_KUBECTL -n $DASHBOARD_NS patch svc kubernetes-dashboard -p '{"spec": {"type": "ClusterIP"}}'
 
 echo "=== Ensuring TLS secret for dashboard ==="
 if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
@@ -83,6 +90,10 @@ if ! grep -q "dashboard.local" /etc/hosts; then
 else
     echo "/etc/hosts already has an entry for dashboard.local"
 fi
+
+echo "=== Adding MicroK8s self-signed TLS to trusted certificates ==="
+sudo cp /var/snap/microk8s/current/certs/server.crt /usr/local/share/ca-certificates/microk8s-dashboard.crt
+sudo update-ca-certificates
 
 echo "=== Waiting for ingress controller and dashboard pods to be Running ==="
 END=$((SECONDS+WAIT_TIMEOUT))
