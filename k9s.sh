@@ -2,7 +2,7 @@
 
 # K9s Installer Script for MicroK8s
 # Fully compatible with MicroK8s dashboard in kube-system
-# Sets default namespace to kube-system
+# Sets default namespace to kube-system and launches K9s
 
 set -e
 
@@ -69,6 +69,6 @@ EOF
 echo ""
 echo "=============================================="
 echo " K9s installation complete."
-echo " Use 'k' or 'k9s' to start K9s."
+echo " You can start it with 'k' or 'k9s'."
 echo " It will default to the 'kube-system' namespace where the dashboard lives."
 echo "=============================================="
