@@ -1,8 +1,7 @@
 #!/bin/bash
 
 # K9s Installer Script for MicroK8s
-# Fully compatible with MicroK8s dashboard in kube-system
-# Sets default namespace to kube-system and launches K9s
+# Installs K9s, sets kubeconfig, defaults to kube-system, and launches K9s
 
 set -e
 
@@ -24,16 +23,10 @@ case "$ARCH" in
 esac
 echo "Architecture detected: $ARCH → K9s target: $K9S_ARCH"
 
-echo "=== Checking if K9s is already installed ==="
+echo "=== Installing K9s if missing ==="
 if ! command -v k9s >/dev/null 2>&1; then
-    echo "=== Fetching latest K9s release metadata ==="
     RELEASE_URL=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | \
         jq -r --arg arch "$K9S_ARCH" '.assets[] | select(.name | test("k9s_Linux_\($arch).tar.gz$")) | .browser_download_url')
-
-    if [ -z "$RELEASE_URL" ]; then
-        echo "Error: Could not determine latest K9s release URL."
-        exit 1
-    fi
 
     TMP_FILE=$(mktemp)
     curl -L "$RELEASE_URL" -o "$TMP_FILE"
@@ -69,6 +62,8 @@ EOF
 echo ""
 echo "=============================================="
 echo " K9s installation complete."
-echo " You can start it with 'k' or 'k9s'."
-echo " It will default to the 'kube-system' namespace where the dashboard lives."
+echo " Launching K9s now..."
 echo "=============================================="
+
+# Launch K9s in kube-system namespace
+k9s
