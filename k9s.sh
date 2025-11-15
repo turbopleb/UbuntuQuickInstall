@@ -96,17 +96,18 @@ echo "=== Getting NodePort for Kubernetes Dashboard ==="
 NODEPORT=$(sudo microk8s kubectl -n $DASHBOARD_NS get svc kubernetes-dashboard -o jsonpath='{.spec.ports[0].nodePort}')
 echo "Dashboard NodePort: $NODE_IP:$NODEPORT"
 
-echo "=== Generating Kubernetes Dashboard admin token ==="
-sudo microk8s kubectl -n $DASHBOARD_NS create serviceaccount dashboard-admin || true
-sudo microk8s kubectl -n $DASHBOARD_NS create clusterrolebinding dashboard-admin \
-    --clusterrole=cluster-admin \
-    --serviceaccount=kube-system:dashboard-admin || true
+echo "=== Creating or updating Kubernetes Dashboard admin token ==="
+if ! sudo microk8s kubectl -n $DASHBOARD_NS get sa dashboard-admin >/dev/null 2>&1; then
+    sudo microk8s kubectl -n $DASHBOARD_NS create sa dashboard-admin
+fi
+if ! sudo microk8s kubectl get clusterrolebinding dashboard-admin >/dev/null 2>&1; then
+    sudo microk8s kubectl create clusterrolebinding dashboard-admin --clusterrole=cluster-admin --serviceaccount=kube-system:dashboard-admin
+fi
 
+DASHBOARD_SECRET=$(sudo microk8s kubectl -n $DASHBOARD_NS get sa dashboard-admin -o jsonpath='{.secrets[0].name}')
+ADMIN_TOKEN=$(sudo microk8s kubectl -n $DASHBOARD_NS get secret $DASHBOARD_SECRET -o jsonpath='{.data.token}' | base64 -d)
 echo "Your Kubernetes Dashboard admin token is:"
-sudo microk8s kubectl -n $DASHBOARD_NS get secret \
-  $(sudo microk8s kubectl -n $DASHBOARD_NS get sa dashboard-admin -o jsonpath="{.secrets[0].name}") \
-  -o jsonpath="{.data.token}" | base64 -d
-echo
+echo "$ADMIN_TOKEN"
 
 echo "=== K9s & Dashboard Setup Complete ==="
 echo "Dashboard accessible at:"
