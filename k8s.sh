@@ -23,36 +23,46 @@ if ! getent group microk8s >/dev/null; then
 fi
 
 echo "=== Adding user '$USER_NAME' to microk8s group ==="
-sudo usermod -aG microk8s "$USER_NAME"
+sudo usermod -aG microk8s $USER_NAME
 
 echo "=== Ensuring ~/.kube exists ==="
-mkdir -p "$HOME/.kube"
+mkdir -p ~/.kube
 
-echo "=== Fixing permissions ==="
-sudo chown -R "$USER_NAME":microk8s "$HOME/.kube"
-sudo chown -R "$USER_NAME":microk8s /var/snap/microk8s || true
+echo "=== Fixing permissions for MicroK8s ==="
+sudo chown -R $USER_NAME ~/.kube
+sudo chown -R $USER_NAME /var/snap/microk8s || true
 
-echo "=== Applying group membership via sg (avoiding newgrp) ==="
+echo "=== Applying new group membership ==="
+exec sg microk8s -c "$0" || true
 
 echo "=== Waiting for MicroK8s to become ready ==="
-sg microk8s -c "microk8s status --wait-ready"
+microk8s status --wait-ready
 
 echo "=== Enabling core addons (DNS + hostpath storage) ==="
-sg microk8s -c "microk8s enable dns hostpath-storage"
+microk8s enable dns
+microk8s enable hostpath-storage
 
 echo "=== Waiting for kube-system core components ==="
 CORE_PODS=("kube-dns" "kube-apiserver" "kube-controller-manager" "kube-scheduler" "kube-proxy")
 
 for pod_label in "${CORE_PODS[@]}"; do
     echo "Waiting for pods with label '$pod_label' to be Ready..."
-    sg microk8s -c "
-    until kubectl -n kube-system get pods -l k8s-app=$pod_label -o jsonpath='{.items[*].status.containerStatuses[*].ready}' | grep -q true; do
+    until microk8s kubectl -n kube-system get pods -l k8s-app=$pod_label -o jsonpath='{.items[*].status.containerStatuses[*].ready}' 2>/dev/null | grep -q true; do
         sleep 2
     done
-    "
     echo "$pod_label pods are Ready"
 done
 
-echo "=== Cluster setup complete! ==="
-sg microk8s -c "microk8s kubectl get nodes"
-echo "You can now run MicroK8s commands as '$USER_NAME' without using newgrp."
+echo "=== Cluster Ready! ==="
+
+echo "=== Printing Kubernetes dashboard admin token (if dashboard enabled) ==="
+if microk8s kubectl -n kube-system get secret | grep -q kubernetes-dashboard-token; then
+    SECRET_NAME=$(microk8s kubectl -n kube-system get secret | grep kubernetes-dashboard-token | awk '{print $1}')
+    TOKEN=$(microk8s kubectl -n kube-system describe secret $SECRET_NAME | grep '^token:' | awk '{print $2}')
+    echo "Dashboard Admin Token:"
+    echo $TOKEN
+else
+    echo "Dashboard token not found (dashboard not enabled)"
+fi
+
+echo "=== Setup complete! Your next script can enable dashboard and ingress ==="
