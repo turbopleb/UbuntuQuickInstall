@@ -2,62 +2,113 @@
 
 # K9s Installer Script for MicroK8s
 # Works out-of-the-box on Ubuntu
-# Sets up kubeconfig for MicroK8s automatically
+# Handles architecture detection, kubeconfig setup, and alias creation
 
-set -e
+set -euo pipefail
 
-USER_NAME=$(whoami)
 K9S_BIN="/usr/local/bin/k9s"
+USER_NAME=$(whoami)
 
 echo "=== Updating packages ==="
 sudo apt update && sudo apt upgrade -y
 
-echo "=== Installing dependencies ==="
+echo "=== Installing required packages (curl, tar, jq) ==="
 sudo apt install -y curl tar jq
+
+echo "=== Detecting system architecture ==="
+ARCH=$(uname -m)
+
+case "$ARCH" in
+    x86_64)   K9S_ARCH="amd64" ;;
+    aarch64)  K9S_ARCH="arm64" ;;
+    armv7l)   K9S_ARCH="arm" ;;
+    *)
+        echo "ERROR: Unsupported architecture: $ARCH"
+        exit 1
+        ;;
+esac
+
+echo "Architecture detected: $ARCH → K9s target: $K9S_ARCH"
+echo ""
 
 echo "=== Checking if K9s is already installed ==="
 if command -v k9s >/dev/null 2>&1; then
     echo "K9s is already installed at $(which k9s)"
+    INSTALLED=true
 else
-    echo "=== Downloading latest K9s release ==="
-    # Get latest release URL for Linux amd64
-    RELEASE_URL=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest \
-        | jq -r '.assets[] | select(.name | test("Linux_x86_64.tar.gz$")) | .browser_download_url')
+    INSTALLED=false
+fi
 
-    if [ -z "$RELEASE_URL" ]; then
-        echo "Error: Could not determine latest K9s release URL."
+if [ "$INSTALLED" = false ]; then
+    echo "=== Fetching latest K9s release metadata ==="
+
+    RELEASE_URL=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest \
+        | jq -r ".assets[] | select(.name | test(\"Linux_${K9S_ARCH}\\.tar\\.gz$\")) | .browser_download_url")
+
+    if [[ -z "$RELEASE_URL" || "$RELEASE_URL" == "null" ]]; then
+        echo "ERROR: Could not determine latest K9s release URL for architecture: $K9S_ARCH"
         exit 1
     fi
 
-    TMP_FILE=$(mktemp)
-    curl -L "$RELEASE_URL" -o "$TMP_FILE"
+    echo "Latest release download URL: $RELEASE_URL"
+    echo ""
+
+    TMPDIR=$(mktemp -d)
+    TARFILE="$TMPDIR/k9s.tar.gz"
+
+    echo "=== Downloading K9s archive ==="
+    curl -L "$RELEASE_URL" -o "$TARFILE"
 
     echo "=== Extracting K9s ==="
-    tar -xzf "$TMP_FILE" -C /tmp
+    tar -xzf "$TARFILE" -C "$TMPDIR"
 
     echo "=== Installing K9s to /usr/local/bin ==="
-    sudo mv /tmp/k9s "$K9S_BIN"
+    sudo mv "$TMPDIR/k9s" "$K9S_BIN"
     sudo chmod +x "$K9S_BIN"
 
-    echo "=== Cleaning up ==="
-    rm -f "$TMP_FILE"
+    echo "=== Cleaning up temporary files ==="
+    rm -rf "$TMPDIR"
+
+    echo "K9s installation complete."
+    echo ""
 fi
 
-echo "=== Setting up alias 'k' for K9s ==="
+echo "=== Creating alias 'k' for K9s (if missing) ==="
 if ! grep -q 'alias k=k9s' ~/.bashrc; then
     echo 'alias k=k9s' >> ~/.bashrc
+    echo "Alias 'k' added to ~/.bashrc"
+else
+    echo "Alias 'k' already exists in ~/.bashrc"
 fi
 alias k=k9s
 
 echo "=== Setting up kubeconfig for MicroK8s ==="
+
 mkdir -p ~/.kube
-microk8s config > ~/.kube/config
-chmod 600 ~/.kube/config
-export KUBECONFIG=$HOME/.kube/config
+
+# Write kubeconfig from MicroK8s into ~/.kube/config
+if microk8s config > ~/.kube/config 2>/dev/null; then
+    chmod 600 ~/.kube/config
+    echo "Kubeconfig successfully written to ~/.kube/config"
+else
+    echo "ERROR: Could not generate kubeconfig from MicroK8s."
+    echo "Make sure MicroK8s is running:"
+    echo "  microk8s status --wait-ready"
+    exit 1
+fi
 
 echo ""
-echo "=== MANUAL STEPS / NOTES ==="
-echo "1. Start K9s by running 'k9s' or use alias 'k'."
-echo "2. K9s automatically uses the MicroK8s cluster kubeconfig."
-echo "3. Ensure MicroK8s is running (microk8s status --wait-ready) before using K9s."
-echo "4. No additional configuration required unless customizing K9s settings."
+echo "=============================================="
+echo " K9s Installation Complete"
+echo "=============================================="
+echo "Run K9s using:"
+echo ""
+echo "    k9s"
+echo "or:"
+echo "    k"
+echo ""
+echo "K9s is now connected to your MicroK8s cluster."
+echo "Ensure MicroK8s is running before using K9s:"
+echo "    microk8s status --wait-ready"
+echo "=============================================="
+echo ""
