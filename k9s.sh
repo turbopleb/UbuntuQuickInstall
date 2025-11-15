@@ -18,9 +18,7 @@ mkdir -p ~/.kube
 microk8s config > ~/.kube/config
 
 echo "=== Making 'k' command work immediately ==="
-# Function works immediately
 function k() { k9s "$@"; }
-# Persist for future sessions
 if ! grep -q 'function k()' ~/.bashrc; then
     echo 'function k() { k9s "$@"; }' >> ~/.bashrc
 fi
@@ -29,6 +27,12 @@ echo "Run 'k' now in this shell to launch K9s."
 echo "=== Enabling MicroK8s dashboard and ingress ==="
 microk8s enable ingress
 microk8s enable dashboard
+
+echo "=== Exposing Kubernetes Dashboard as NodePort ==="
+$MICROK8S_KUBECTL -n $DASHBOARD_NS patch service kubernetes-dashboard -p '{"spec":{"type":"NodePort"}}'
+
+# Get the assigned NodePort
+DASHBOARD_PORT=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get service kubernetes-dashboard -o jsonpath='{.spec.ports[0].nodePort}')
 
 echo "=== Ensuring TLS secret for dashboard ==="
 if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
@@ -66,7 +70,6 @@ EOF
 
 echo "=== Updating /etc/hosts with node IP for dashboard.local ==="
 NODE_IP=$($MICROK8S_KUBECTL get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-# Remove old entry if exists
 sudo sed -i '/dashboard.local/d' /etc/hosts
 echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts > /dev/null
 echo "/etc/hosts updated: $NODE_IP dashboard.local"
@@ -85,5 +88,5 @@ while [ $SECONDS -lt $END ]; do
 done
 
 echo "=== Dashboard should now be accessible ==="
-echo "URL: https://dashboard.local"
+echo "URL: https://dashboard.local (NodePort $DASHBOARD_PORT, Node IP $NODE_IP)"
 echo "You can run 'k' in this shell to start K9s immediately."
