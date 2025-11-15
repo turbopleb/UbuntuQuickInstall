@@ -4,7 +4,6 @@ set -e
 USER_NAME=$(whoami)
 MICROK8S_KUBECTL="microk8s kubectl"
 DASHBOARD_NS="kube-system"
-INGRESS_NS="ingress"
 
 echo "=== Installing required packages (curl, tar, jq, openssl, ca-certificates) ==="
 sudo apt update -y
@@ -35,14 +34,27 @@ else
 fi
 
 echo "=== Making 'k' command work immediately ==="
-# Define shell function for immediate use
 k() { k9s "$@"; }
 export -f k
 echo "Run 'k' now to launch K9s."
 
-echo "=== Enabling MicroK8s dashboard and ingress ==="
+echo "=== Enabling MicroK8s ingress and dashboard ==="
 sudo microk8s enable ingress || true
 sudo microk8s enable dashboard || true
+
+echo "=== Waiting for dashboard service to exist ==="
+SECONDS_WAITED=0
+TIMEOUT=60
+until $MICROK8S_KUBECTL -n $DASHBOARD_NS get svc kubernetes-dashboard >/dev/null 2>&1 || [ $SECONDS_WAITED -ge $TIMEOUT ]; do
+    echo "Waiting for Kubernetes Dashboard service to appear..."
+    sleep 3
+    SECONDS_WAITED=$((SECONDS_WAITED+3))
+done
+
+if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get svc kubernetes-dashboard >/dev/null 2>&1; then
+    echo "Error: Dashboard service still not found. Exiting."
+    exit 1
+fi
 
 echo "=== Exposing Kubernetes Dashboard as NodePort ==="
 $MICROK8S_KUBECTL -n $DASHBOARD_NS patch svc kubernetes-dashboard \
@@ -94,4 +106,4 @@ fi
 
 echo "=== K9s & Dashboard setup complete ==="
 echo "Run 'k' to launch K9s."
-echo "Dashboard URL: https://dashboard.local (NodePort exposed, TLS enabled)"
+echo "Dashboard URL: https://dashboard.local (NodePort, TLS enabled)"
