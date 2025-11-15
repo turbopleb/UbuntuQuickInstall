@@ -108,7 +108,7 @@ echo "=== Adding dashboard.local cert to system trusted CA ==="
 sudo cp /var/snap/microk8s/current/certs/server.crt /usr/local/share/ca-certificates/dashboard.local.crt
 sudo update-ca-certificates
 
-echo "=== Generating Kubernetes Dashboard admin token ==="
+echo "=== Generating or ensuring Kubernetes Dashboard admin token ==="
 $MICROK8S_KUBECTL -n $DASHBOARD_NS apply -f - <<EOF
 apiVersion: v1
 kind: ServiceAccount
