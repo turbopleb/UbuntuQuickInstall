@@ -4,14 +4,11 @@
 # Includes dashboard, ingress, hostpath storage, admin-user token fix
 # Adds system-wide kubectl symlink
 # Exposes dashboard via NGINX Ingress
-# Waits for all required pods to be Running before exiting
 
-set -e
+set -euo pipefail
 
 USER_NAME=$(whoami)
 MICROK8S_KUBECTL="microk8s kubectl"
-WAIT_TIMEOUT=600  # 10 minutes
-SLEEP_INTERVAL=5  # seconds
 
 echo "=== Updating packages ==="
 sudo apt update && sudo apt upgrade -y
@@ -27,11 +24,9 @@ if ! snap list | grep -q microk8s; then
 fi
 
 echo "=== Ensuring user is in microk8s group ==="
-if ! groups $USER_NAME | grep -q "\bmicrok8s\b"; then
+if ! groups "$USER_NAME" | grep -q "\bmicrok8s\b"; then
     echo "Adding $USER_NAME to microk8s group..."
-    sudo usermod -a -G microk8s $USER_NAME
-    mkdir -p ~/.kube
-    sudo chown -R $USER_NAME ~/.kube
+    sudo usermod -a -G microk8s "$USER_NAME"
     echo "Reloading group membership..."
     exec sg microk8s "$0 $@"
     exit
@@ -44,7 +39,7 @@ echo "MicroK8s is ready."
 echo "=== Setting up ~/.kube/config ==="
 mkdir -p ~/.kube
 microk8s config > ~/.kube/config
-sudo chown -R $USER_NAME ~/.kube
+sudo chown -R "$USER_NAME" ~/.kube
 chmod 600 ~/.kube/config
 
 echo "=== Setting up kubectl alias ==="
@@ -62,12 +57,45 @@ echo "=== Enabling MicroK8s addons ==="
 ADDONS=(dns dashboard ingress metrics-server storage hostpath-storage)
 for addon in "${ADDONS[@]}"; do
     echo "--- Enabling $addon ---"
-    sudo microk8s enable $addon
+    sudo microk8s enable "$addon"
 done
+
+echo "=== Waiting for all required pods to be ready ==="
+REQUIRED_PODS=(
+    "kube-system coredns"
+    "kube-system kubernetes-dashboard"
+    "kube-system metrics-server"
+    "ingress nginx-ingress-microk8s-controller"
+)
+
+for entry in "${REQUIRED_PODS[@]}"; do
+    NS=$(echo "$entry" | awk '{print $1}')
+    LABEL=$(echo "$entry" | awk '{print $2}')
+    echo "Waiting for pod $LABEL in namespace $NS..."
+    until microk8s kubectl -n "$NS" get pods -l k8s-app="$LABEL" -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
+        sleep 5
+    done
+done
+echo "All required pods are running."
+
+echo "=== Waiting for required services ==="
+REQUIRED_SERVICES=(
+    "kube-system kubernetes-dashboard"
+    "kube-system metrics-server"
+    "ingress nginx-ingress-microk8s-controller"
+)
+for svc in "${REQUIRED_SERVICES[@]}"; do
+    NS=$(echo "$svc" | awk '{print $1}')
+    NAME=$(echo "$svc" | awk '{print $2}')
+    echo "Waiting for service $NAME in namespace $NS..."
+    until microk8s kubectl -n "$NS" get svc "$NAME" >/dev/null 2>&1; do
+        sleep 5
+    done
+done
+echo "All required services exist."
 
 # Dashboard namespace
 DASHBOARD_NS="kube-system"
-INGRESS_NS="ingress"
 
 echo "=== Creating admin-user for Dashboard ==="
 $MICROK8S_KUBECTL apply -f - <<EOF
@@ -114,49 +142,22 @@ spec:
               number: 443
 EOF
 
+# Update /etc/hosts with node IP
 NODE_IP=$(hostname -I | awk '{print $1}')
-
-# Add entry to /etc/hosts
 if ! grep -q "dashboard.local" /etc/hosts; then
-    echo "Adding dashboard.local -> $NODE_IP in /etc/hosts"
     echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
+    echo "/etc/hosts updated: dashboard.local -> $NODE_IP"
+else
+    echo "/etc/hosts already has dashboard.local"
 fi
 
-echo "=== Waiting for all required pods to be Running ==="
-END=$((SECONDS+WAIT_TIMEOUT))
-
-# function to wait for pods in a namespace
-wait_for_pods() {
-    local ns=$1
-    echo "Waiting for pods in namespace: $ns"
-    while [ $SECONDS -lt $END ]; do
-        NOT_READY=$($MICROK8S_KUBECTL -n $ns get pods --no-headers 2>/dev/null | awk '{if($3!="Running" && $3!="Completed") print $1}' || true)
-        if [ -z "$NOT_READY" ]; then
-            echo "All pods in $ns are Running"
-            break
-        else
-            echo "Waiting for pods to be ready: $NOT_READY"
-            sleep $SLEEP_INTERVAL
-        fi
-    done
-
-    # If timeout exceeded
-    if [ $SECONDS -ge $END ]; then
-        echo "Timeout waiting for pods in $ns. Some pods are not ready:"
-        $MICROK8S_KUBECTL -n $ns get pods
-    fi
-}
-
-# Wait for both namespaces
-wait_for_pods $DASHBOARD_NS
-wait_for_pods $INGRESS_NS
-
-echo "=== Fetching admin-user token ==="
+# Wait for admin-user token
+echo "=== Waiting for admin-user token to be ready ==="
 TOKEN=""
 for i in {1..12}; do
-    SECRET_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret | grep admin-user | awk '{print $1}' || true)
+    SECRET_NAME=$($MICROK8S_KUBECTL -n "$DASHBOARD_NS" get secret | grep admin-user | awk '{print $1}' || true)
     if [ -n "$SECRET_NAME" ]; then
-        TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret $SECRET_NAME -o jsonpath='{.data.token}' 2>/dev/null | base64 --decode || true)
+        TOKEN=$($MICROK8S_KUBECTL -n "$DASHBOARD_NS" get secret "$SECRET_NAME" -o jsonpath='{.data.token}' 2>/dev/null | base64 --decode || true)
         if [ -n "$TOKEN" ]; then
             break
         fi
@@ -164,7 +165,6 @@ for i in {1..12}; do
     echo "Waiting for admin-user token... attempt $i/12"
     sleep 5
 done
-
 if [ -z "$TOKEN" ]; then
     TOKEN="<token not available yet>"
 fi
