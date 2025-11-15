@@ -106,7 +106,8 @@ if ! grep -q "dashboard.local" /etc/hosts; then
 fi
 
 echo "=== Waiting for ingress pod to be ready ==="
-kubectl -n ingress wait --for=condition=Ready pod -l app=nginx-ingress --timeout=90s
+INGRESS_POD=$(microk8s kubectl get pod -n ingress -l app=nginx-ingress -o jsonpath='{.items[0].metadata.name}')
+microk8s kubectl wait pod -n ingress "$INGRESS_POD" --for=condition=Ready --timeout=90s
 
 echo "=== K9s Installation & Dashboard HTTPS Ingress Fix Complete ==="
 echo "Run 'k' or 'k9s' to launch K9s."
