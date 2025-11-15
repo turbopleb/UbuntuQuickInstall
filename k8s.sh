@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Full MicroK8s Setup Script for Ubuntu
-# Sets up MicroK8s with dashboard, ingress, storage, and admin-user
-# Exposes dashboard via NGINX Ingress
-# Updates /etc/hosts with dashboard.local
-# Waits for dashboard and ingress pods to be ready
+# Includes dashboard, ingress, hostpath storage, admin-user token
+# Adds system-wide kubectl symlink
+# Exposes dashboard via NGINX Ingress with TLS
+# Updates /etc/hosts for dashboard.local
 
 set -e
 
@@ -88,11 +88,18 @@ until $MICROK8S_KUBECTL -n $DASHBOARD_NS get pods -l k8s-app=kubernetes-dashboar
     sleep 5
 done
 
-echo "=== Waiting for ingress controller pod to be ready ==="
-until $MICROK8S_KUBECTL -n ingress get pods -l name=nginx-ingress-microk8s-controller -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
-    echo "Waiting for ingress controller pod..."
+echo "=== Waiting for ingress controller to be ready ==="
+until $MICROK8S_KUBECTL -n ingress get pods -l app=nginx-ingress-microk8s -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
+    echo "Waiting for ingress controller..."
     sleep 5
 done
+
+echo "=== Creating TLS secret for dashboard ==="
+if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
+    $MICROK8S_KUBECTL -n $DASHBOARD_NS create secret tls dashboard-tls \
+        --cert=/var/snap/microk8s/current/certs/server.crt \
+        --key=/var/snap/microk8s/current/certs/server.key
+fi
 
 echo "=== Creating Ingress for Dashboard ==="
 $MICROK8S_KUBECTL apply -f - <<EOF
@@ -105,6 +112,10 @@ metadata:
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   ingressClassName: public
+  tls:
+  - hosts:
+    - dashboard.local
+    secretName: dashboard-tls
   rules:
   - host: dashboard.local
     http:
@@ -119,11 +130,11 @@ spec:
 EOF
 
 NODE_IP=$(hostname -I | awk '{print $1}')
-echo "=== Updating /etc/hosts ==="
-HOST_ENTRY="$NODE_IP dashboard.local"
+
+# Add /etc/hosts entry
 if ! grep -q "dashboard.local" /etc/hosts; then
-    echo "Adding $HOST_ENTRY to /etc/hosts"
-    echo "$HOST_ENTRY" | sudo tee -a /etc/hosts > /dev/null
+    echo "Adding dashboard.local -> $NODE_IP in /etc/hosts"
+    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
 else
     echo "/etc/hosts already has an entry for dashboard.local"
 fi
@@ -153,7 +164,7 @@ echo "----------------------------------------------"
 echo "kubectl is ready. Test with:"
 echo "    kubectl get nodes"
 echo ""
-echo "Dashboard URL via Ingress:"
+echo "Kubernetes Dashboard URL via Ingress:"
 echo "    https://dashboard.local"
 echo ""
 echo "Dashboard Admin Token:"
