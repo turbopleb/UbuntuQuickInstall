@@ -3,10 +3,9 @@ set -e
 
 USER_NAME=$(whoami)
 MICROK8S_KUBECTL="microk8s kubectl"
-WAIT_TIMEOUT=300  # 5 minutes
-SLEEP_INTERVAL=5  # seconds
+WAIT_TIMEOUT=300
+SLEEP_INTERVAL=5
 DASHBOARD_NS="kube-system"
-INGRESS_NS="ingress"
 
 echo "=== Ensuring user is in microk8s group ==="
 if ! groups $USER_NAME | grep -q '\bmicrok8s\b'; then
@@ -21,26 +20,46 @@ echo "=== Setting up kubeconfig for MicroK8s ==="
 mkdir -p ~/.kube
 microk8s config > ~/.kube/config
 
-echo "=== Enabling MicroK8s dashboard and ingress ==="
-microk8s enable ingress dashboard
+echo "=== Enabling MicroK8s ingress ==="
+microk8s enable ingress
 
-# Give ingress and dashboard a few seconds to initialize
-sleep 10
+echo "=== Enabling Kubernetes Dashboard ==="
+microk8s enable dashboard
 
-NODE_IP=$(hostname -I | awk '{print $1}')
-HOST_ENTRY="$NODE_IP dashboard.local"
+echo "=== Enabling Metrics Server ==="
+microk8s enable metrics-server
 
-echo "=== Setting up dashboard ingress for external access ==="
-microk8s kubectl -n $DASHBOARD_NS delete ingress kubernetes-dashboard-ingress --ignore-not-found
+# Wait for metrics-server pod to be Running
+echo "=== Waiting for metrics-server pod ==="
+END=$((SECONDS+WAIT_TIMEOUT))
+while [ $SECONDS -lt $END ]; do
+    METRICS_READY=$($MICROK8S_KUBECTL -n kube-system get pods -l k8s-app=metrics-server --no-headers 2>/dev/null | awk '{if($3=="Running") print $1}')
+    if [ -n "$METRICS_READY" ]; then
+        echo "Metrics-server pod is running: $METRICS_READY"
+        break
+    fi
+    echo "Waiting for metrics-server pod..."
+    sleep $SLEEP_INTERVAL
+done
+
+# Ensure dashboard service exists
+echo "=== Checking Kubernetes Dashboard service ==="
+if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get svc kubernetes-dashboard >/dev/null 2>&1; then
+    echo "Dashboard service not found. Something went wrong with addon enable."
+    exit 1
+fi
 
 # Create TLS secret if missing
-if ! microk8s kubectl -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
+if ! $MICROK8S_KUBECTL -n $DASHBOARD_NS get secret dashboard-tls >/dev/null 2>&1; then
     microk8s kubectl -n $DASHBOARD_NS create secret tls dashboard-tls \
         --cert=/var/snap/microk8s/current/certs/server.crt \
         --key=/var/snap/microk8s/current/certs/server.key
 fi
 
-# Apply ingress YAML
+# Expose dashboard externally via ingress
+echo "=== Applying dashboard ingress ==="
+microk8s kubectl -n $DASHBOARD_NS delete ingress kubernetes-dashboard-ingress --ignore-not-found
+
 cat <<EOF | microk8s kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -67,29 +86,33 @@ spec:
               number: 443
 EOF
 
-# Add /etc/hosts entry if missing
-if ! grep -q "dashboard.local" /etc/hosts; then
-    echo "$HOST_ENTRY" | sudo tee -a /etc/hosts > /dev/null
-    echo "/etc/hosts updated: $HOST_ENTRY"
+# Correct /etc/hosts to point dashboard.local to node IP
+NODE_IP=$(hostname -I | awk '{print $1}')
+if grep -q "dashboard.local" /etc/hosts; then
+    sudo sed -i "s/.*dashboard.local/$NODE_IP dashboard.local/" /etc/hosts
+else
+    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts > /dev/null
 fi
+echo "/etc/hosts updated: dashboard.local → $NODE_IP"
 
-echo "=== Installing K9s if missing ==="
+# Ensure K9s installed
 ARCH=$(uname -m)
 TARGET="amd64"
 [[ "$ARCH" != "x86_64" ]] && TARGET="$ARCH"
 
 if ! command -v k9s >/dev/null 2>&1; then
+    echo "=== Installing K9s ==="
     LATEST=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | jq -r '.tag_name')
     curl -L https://github.com/derailed/k9s/releases/download/${LATEST}/k9s_Linux_${TARGET}.tar.gz -o /tmp/k9s.tar.gz
     tar -xzf /tmp/k9s.tar.gz -C /tmp
     sudo mv /tmp/k9s /usr/local/bin/
 fi
 
-# Alias 'k' works immediately
+# Set alias immediately
 alias k='k9s'
-echo "=== Alias 'k' for K9s set for current session ==="
+echo "Alias 'k' set for current session"
 
-# Optional: configure K9s resource hotkeys
+# K9s resource hotkeys
 mkdir -p ~/.k9s
 cat <<EOF > ~/.k9s/skin.yml
 k9s:
@@ -103,5 +126,6 @@ k9s:
 EOF
 
 echo "=== Setup Complete ==="
-echo "Run 'k' to start K9s."
-echo "Dashboard available at: https://dashboard.local"
+echo "Run 'k' to launch K9s."
+echo "Dashboard URL: https://dashboard.local"
+echo "Metrics-server enabled: CPU/Memory stats should now appear in K9s."
