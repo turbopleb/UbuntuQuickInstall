@@ -4,6 +4,7 @@
 # Includes dashboard, ingress, hostpath storage, admin-user token fix
 # Adds system-wide kubectl symlink
 # Exposes dashboard via NGINX Ingress
+# DOES NOT modify /etc/hosts
 
 set -e
 
@@ -62,23 +63,6 @@ for addon in "${ADDONS[@]}"; do
     sudo microk8s enable $addon
 done
 
-# --- Wait for ingress controller with timeout ---
-echo "=== Waiting for ingress controller to be ready (max 2 min) ==="
-READY=0
-for i in {1..24}; do
-    if microk8s kubectl -n ingress get pods -l app.kubernetes.io/name=ingress-nginx --field-selector=status.phase=Running 2>/dev/null | grep -q 'Running'; then
-        READY=1
-        echo "Ingress controller is running."
-        break
-    else
-        echo "Waiting for ingress controller... ($i/24)"
-        sleep 5
-    fi
-done
-if [ $READY -eq 0 ]; then
-    echo "Warning: Ingress controller did not become ready in 2 minutes."
-fi
-
 # Dashboard namespace
 DASHBOARD_NS="kube-system"
 echo "Dashboard namespace detected: $DASHBOARD_NS"
@@ -133,14 +117,6 @@ spec:
             port:
               number: 443
 EOF
-
-NODE_IP=$(hostname -I | awk '{print $1}')
-
-# Add entry to /etc/hosts
-if ! grep -q "dashboard.local" /etc/hosts; then
-    echo "Adding dashboard.local -> $NODE_IP in /etc/hosts"
-    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
-fi
 
 echo "=== Waiting for admin-user token to be ready ==="
 TOKEN=""
