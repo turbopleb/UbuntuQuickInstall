@@ -2,7 +2,7 @@
 
 # K9s Installer Script for MicroK8s
 # Works on Ubuntu
-# Fixes jq regex issues, auto-selects correct asset, and handles microk8s group
+# Handles microk8s group, installs K9s, and sets kubeconfig
 
 set -e
 
@@ -20,16 +20,15 @@ if ! groups $USER_NAME | grep -q "\bmicrok8s\b"; then
     echo "Adding $USER_NAME to microk8s group..."
     sudo usermod -aG microk8s $USER_NAME
     echo "You need to log out and back in, or run 'newgrp microk8s' to apply group changes."
+    echo "Reloading group membership for this script..."
+    exec sg microk8s "$0 $@"
+    exit
+else
+    echo "User is already in microk8s group."
 fi
-
-# Reload group membership in script so K9s works immediately
-echo "Reloading group membership..."
-exec sg microk8s "$0 $@"
-exit
 
 echo "=== Detecting system architecture ==="
 ARCH=$(uname -m)
-
 case "$ARCH" in
     x86_64) K9S_ARCH="amd64" ;;
     aarch64|arm64) K9S_ARCH="arm64" ;;
@@ -39,15 +38,8 @@ echo "Architecture detected: $ARCH → K9s target: $K9S_ARCH"
 
 echo "=== Installing K9s if missing ==="
 if ! command -v k9s >/dev/null 2>&1; then
-    echo "Fetching latest K9s release metadata..."
     RELEASE_URL=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest |
         jq -r --arg arch "$K9S_ARCH" '.assets[] | select(.name | test("k9s_Linux_\($arch).tar.gz$")) | .browser_download_url')
-
-    if [ -z "$RELEASE_URL" ]; then
-        echo "Error: Could not determine latest K9s release URL."
-        exit 1
-    fi
-
     TMP_FILE=$(mktemp)
     echo "Downloading K9s..."
     curl -L "$RELEASE_URL" -o "$TMP_FILE"
