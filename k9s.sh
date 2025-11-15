@@ -13,14 +13,15 @@ sudo apt update -y
 sudo apt install -y curl tar jq openssl ca-certificates gnupg apt-transport-https
 
 # ------------------------
-# Install kubectl (fixed repo)
+# Install kubectl (modern approach)
 # ------------------------
 echo "=== Installing kubectl ==="
 if ! command -v kubectl >/dev/null 2>&1; then
     curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/kubernetes-archive-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
-    sudo apt update -y
-    sudo apt install -y kubectl
+    UBUNTU_CODENAME=$(lsb_release -cs)
+    echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-${UBUNTU_CODENAME} main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+    sudo apt update -y || true
+    sudo apt install -y kubectl || true
 fi
 
 echo "=== Ensuring user is in microk8s group ==="
@@ -137,6 +138,14 @@ fi
 echo "=== Adding dashboard.local cert to system trusted CA ==="
 sudo cp /var/snap/microk8s/current/certs/server.crt /usr/local/share/ca-certificates/dashboard.local.crt
 sudo update-ca-certificates
+
+# ------------------------
+# Wait for dashboard pod to be ready
+# ------------------------
+echo "=== Waiting for dashboard pod to be ready ==="
+until [[ $($MICROK8S_KUBECTL -n $DASHBOARD_NS get pods -l k8s-app=kubernetes-dashboard -o jsonpath='{.items[0].status.phase}') == "Running" ]]; do
+    sleep 3
+done
 
 # ------------------------
 # Generate admin token
