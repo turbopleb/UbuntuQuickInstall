@@ -10,7 +10,15 @@ INGRESS_NS="ingress"
 
 echo "=== Installing required packages (curl, tar, jq, openssl, ca-certificates) ==="
 sudo apt update -y
-sudo apt install -y curl tar jq openssl ca-certificates
+sudo apt install -y curl tar jq openssl ca-certificates apt-transport-https gnupg
+
+echo "=== Installing kubectl ==="
+if ! command -v kubectl >/dev/null 2>&1; then
+    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/kubernetes-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+    sudo apt update -y
+    sudo apt install -y kubectl
+fi
 
 echo "=== Ensuring user is in microk8s group ==="
 if ! groups $USER_NAME | grep -q '\bmicrok8s\b'; then
@@ -108,8 +116,8 @@ echo "=== Adding dashboard.local cert to system trusted CA ==="
 sudo cp /var/snap/microk8s/current/certs/server.crt /usr/local/share/ca-certificates/dashboard.local.crt
 sudo update-ca-certificates
 
-echo "=== Generating or ensuring Kubernetes Dashboard admin token ==="
-$MICROK8S_KUBECTL -n $DASHBOARD_NS apply -f - <<EOF
+echo "=== Creating or ensuring Kubernetes Dashboard admin token ==="
+kubectl -n $DASHBOARD_NS apply -f - <<EOF
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -117,15 +125,18 @@ metadata:
   namespace: $DASHBOARD_NS
 EOF
 
-$MICROK8S_KUBECTL create clusterrolebinding dashboard-admin --clusterrole=cluster-admin --serviceaccount=$DASHBOARD_NS:dashboard-admin --dry-run=client -o yaml | $MICROK8S_KUBECTL apply -f -
+kubectl create clusterrolebinding dashboard-admin \
+    --clusterrole=cluster-admin \
+    --serviceaccount=$DASHBOARD_NS:dashboard-admin \
+    --dry-run=client -o yaml | kubectl apply -f -
 
 echo "=== Retrieving Kubernetes Dashboard admin token ==="
 END=$((SECONDS + WAIT_TIMEOUT))
 TOKEN=""
 while [ -z "$TOKEN" ]; do
-    SECRET_NAME=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get sa dashboard-admin -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
+    SECRET_NAME=$(kubectl -n $DASHBOARD_NS get sa dashboard-admin -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
     if [ -n "$SECRET_NAME" ]; then
-        TOKEN=$($MICROK8S_KUBECTL -n $DASHBOARD_NS get secret $SECRET_NAME -o jsonpath='{.data.token}' 2>/dev/null | base64 --decode)
+        TOKEN=$(kubectl -n $DASHBOARD_NS get secret $SECRET_NAME -o jsonpath='{.data.token}' 2>/dev/null | base64 --decode)
     fi
     [ -z "$TOKEN" ] && sleep $SLEEP_INTERVAL
     [ $SECONDS -ge $END ] && break
