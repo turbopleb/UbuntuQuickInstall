@@ -47,21 +47,33 @@ echo "=== Enabling core addons (DNS + hostpath storage) ==="
 microk8s enable dns
 microk8s enable hostpath-storage
 
-echo "=== Waiting for kube-system core components ==="
-CORE_LABELS=("k8s-app=kube-dns" "component=kube-apiserver" "component=kube-controller-manager" "component=kube-scheduler" "k8s-app=kube-proxy")
+echo "=== Checking kube-system core components ==="
+CORE_PODS=("kube-apiserver" "kube-controller-manager" "kube-scheduler" "kube-proxy" "coredns")
 
-for label in "${CORE_LABELS[@]}"; do
-    echo "Waiting for pods with label '$label' to be Ready..."
+for pod in "${CORE_PODS[@]}"; do
+    echo "Checking pod '$pod'..."
     spinner="/|\\-"
     i=0
-    until microk8s kubectl -n kube-system get pods -l $label -o jsonpath='{.items[*].status.containerStatuses[*].ready}' 2>/dev/null | grep -q true; do
+    for attempt in {1..30}; do
+        POD_STATUS=$(microk8s kubectl -n kube-system get pod -l "component=$pod" -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo "")
+        if [[ -z "$POD_STATUS" ]]; then
+            # Pod does not exist yet
+            printf "\r${spinner:$i:1} Waiting for pod '$pod' to appear..."
+        elif [[ "$POD_STATUS" == "Running" ]]; then
+            # Pod exists and running
+            echo "Pod '$pod' is running, continuing..."
+            break
+        elif [[ "$POD_STATUS" == "Pending" || "$POD_STATUS" == "Failed" || "$POD_STATUS" == "Evicted" ]]; then
+            # Pod exists but not ready, skip
+            echo "Pod '$pod' is $POD_STATUS, skipping check..."
+            break
+        fi
         i=$(( (i+1) %4 ))
         printf "\r${spinner:$i:1} "
-        sleep 1
+        sleep 2
     done
-    printf "\rPods with label '$label' are Ready!        \n"
 done
 
-echo "=== Cluster Ready! ==="
+echo "=== MicroK8s cluster is ready! ==="
 echo "DNS and hostpath storage are enabled."
-echo "Metrics-server, dashboard, and ingress can be enabled later via your next script."
+echo "Other addons (dashboard, ingress, metrics-server, k9s) can be added later."
