@@ -37,7 +37,7 @@ microk8s kubectl -n kube-system patch svc kubernetes-dashboard -p '{"spec":{"typ
 # Wait for NodePort assignment
 sleep 5
 
-# Detect NodePort
+# Detect NodePort and node IP
 NODE_PORT=$(microk8s kubectl -n kube-system get svc kubernetes-dashboard -o jsonpath='{.spec.ports[0].nodePort}')
 NODE_IP=$(hostname -I | awk '{print $1}')
 
@@ -65,4 +65,12 @@ echo "[!] NOTE: Your user has been permanently added to the 'microk8s' group."
 echo "[!] If you open a new terminal or run 'newgrp microk8s', your session will be updated"
 echo "[!] but the admin token displayed here will not persist. Save it now!"
 
+# -------- Dashboard readiness check --------
+echo "[+] Waiting for the Kubernetes Dashboard to become ready..."
+until curl -k -s "https://$NODE_IP:$NODE_PORT/" > /dev/null; do
+    echo -n "."
+    sleep 2
+done
+echo ""
+echo "[+] Dashboard is ready at: https://$NODE_IP:$NODE_PORT/"
 EOF
