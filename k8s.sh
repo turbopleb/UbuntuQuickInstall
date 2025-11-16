@@ -4,6 +4,9 @@ set -e
 echo "[+] Updating system..."
 sudo apt update -y
 
+echo "[+] Installing required packages..."
+sudo apt install -y curl
+
 echo "[+] Installing MicroK8s..."
 sudo snap install microk8s --classic
 
