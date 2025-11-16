@@ -1,9 +1,8 @@
 #!/bin/bash
-set -e  # Exit immediately if a command fails
+set -e  # Exit on any error
 
-# --- Step 0: Check prerequisites ---
+# --- Step 0: Prerequisites ---
 echo "Checking prerequisites..."
-
 command -v wget >/dev/null 2>&1 || { echo "Error: wget is not installed. Please install it first."; exit 1; }
 command -v apt >/dev/null 2>&1 || { echo "Error: apt is not available. Are you on Ubuntu/Debian?"; exit 1; }
 
@@ -15,31 +14,39 @@ sudo apt install -y ./k9s_linux_amd64.deb
 rm k9s_linux_amd64.deb
 echo "k9s installed successfully."
 
-# --- Step 2: Setup kubeconfig for MicroK8s ---
-echo "Setting up kubeconfig for MicroK8s..."
-mkdir -p ~/.kube
+# --- Step 2: Ensure user is in microk8s group ---
+echo "Adding user '$USER' to microk8s group..."
+if groups $USER | grep &>/dev/null "\bmicrok8s\b"; then
+    echo "User is already in microk8s group."
+else
+    sudo usermod -aG microk8s $USER
+    echo "User added to microk8s group. Applying group immediately..."
+    newgrp microk8s <<'EOG'
+    echo "New group permissions applied in this shell."
+EOG
+fi
 
+# --- Step 3: Setup kubeconfig for MicroK8s ---
 MICROK8S_CONFIG="/var/snap/microk8s/current/credentials/client.config"
+echo "Setting up kubeconfig..."
+mkdir -p ~/.kube
 if [ -f "$MICROK8S_CONFIG" ]; then
-    sudo cp "$MICROK8S_CONFIG" ~/.kube/config
-    sudo chown $USER:$USER ~/.kube/config
+    cp "$MICROK8S_CONFIG" ~/.kube/config
     chmod 600 ~/.kube/config
     echo "MicroK8s kubeconfig copied to ~/.kube/config."
 else
-    echo "Warning: MicroK8s kubeconfig not found at $MICROK8S_CONFIG"
+    echo "Warning: MicroK8s config not found at $MICROK8S_CONFIG"
     echo "k9s may not detect clusters until MicroK8s is installed and running."
 fi
 
-# --- Step 3: Add alias 'k' for k9s permanently ---
+# --- Step 4: Add alias 'k' for k9s permanently ---
 ALIAS_LINE="alias k='k9s'"
 SHELL_RC="$HOME/.bashrc"
-
-# Avoid duplicate alias
 grep -qxF "$ALIAS_LINE" "$SHELL_RC" || echo "$ALIAS_LINE" >> "$SHELL_RC"
 
-# Make alias available immediately
-eval "$ALIAS_LINE"
+# Make alias available immediately in current shell
+alias k='k9s'
 echo "Alias 'k' set for k9s (works in this terminal and future ones)."
 
-# --- Step 4: Done ---
+# --- Step 5: Done ---
 echo "Setup complete! You can now run 'k9s' or simply 'k'."
