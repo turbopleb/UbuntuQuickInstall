@@ -24,8 +24,6 @@ microk8s enable dns
 microk8s enable hostpath-storage
 microk8s enable ingress
 microk8s enable metrics-server
-
-echo "[+] Enabling Kubernetes Dashboard..."
 microk8s enable dashboard
 
 echo "[+] Creating admin service account + RBAC..."
@@ -58,6 +56,12 @@ spec:
               number: 443
 ING
 
+echo "[+] Exposing ingress controller on NodePort for LAN access..."
+microk8s kubectl -n ingress patch svc ingress-nginx-controller -p '{"spec":{"type":"NodePort"}}'
+
+# Wait a moment for the NodePort to be assigned
+sleep 5
+
 echo "[+] Updating /etc/hosts..."
 NODE_IP=$(hostname -I | awk '{print $1}')
 if ! grep -q "dashboard.local" /etc/hosts; then
@@ -76,14 +80,14 @@ TOKEN_FILE="/home/$USER/k8stoken.txt"
 echo "$ADMIN_TOKEN" > "$TOKEN_FILE"
 chown $USER:$USER "$TOKEN_FILE"
 
-# Get NodePort for dashboard service as alternative
-DASHBOARD_PORT=$(microk8s kubectl -n kube-system get svc kubernetes-dashboard -o jsonpath='{.spec.ports[0].nodePort}')
+# Detect NodePort of ingress controller
+INGRESS_PORT=$(microk8s kubectl -n ingress get svc ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}')
 
 echo "==========================================="
 echo " MicroK8s + Dashboard Installation Complete"
 echo "==========================================="
 echo "Dashboard URL: https://dashboard.local/"
-echo "Dashboard Node IP: $NODE_IP:$DASHBOARD_PORT (alternative if URL doesn't work)"
+echo "Dashboard Node IP: https://$NODE_IP:$INGRESS_PORT (alternative if URL doesn't work)"
 echo ""
 echo "Admin Token (also saved to $TOKEN_FILE):"
 echo "$ADMIN_TOKEN"
