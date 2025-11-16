@@ -17,7 +17,6 @@ mkdir -p /home/$USER_NAME/.kube
 sudo chown -R $USER_NAME:$USER_NAME /home/$USER_NAME/.kube
 
 echo "[+] Activating microk8s permissions in the current shell..."
-# Use sg to temporarily run a shell with correct group membership
 sg microk8s bash <<'EOGROUP'
 set -e
 
@@ -92,4 +91,6 @@ chown $USER:$USER /home/$USER/.kube/config
 EOGROUP
 
 echo ""
-echo "[+] Installation finished! You now have full MicroK8s access without logout."
+echo "[+] Installation finished! Your user has permanent MicroK8s access."
+echo "[+] To use MicroK8s in this shell, you may need to open a new terminal or run:"
+echo "    newgrp microk8s"
