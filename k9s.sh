@@ -20,10 +20,7 @@ if groups $USER | grep &>/dev/null "\bmicrok8s\b"; then
     echo "User is already in microk8s group."
 else
     sudo usermod -aG microk8s $USER
-    echo "User added to microk8s group. Applying group immediately..."
-    newgrp microk8s <<'EOG'
-    echo "New group permissions applied in this shell."
-EOG
+    echo "User added to microk8s group. Permissions will take effect after next login."
 fi
 
 # --- Step 3: Setup kubeconfig for MicroK8s ---
@@ -31,7 +28,8 @@ MICROK8S_CONFIG="/var/snap/microk8s/current/credentials/client.config"
 echo "Setting up kubeconfig..."
 mkdir -p ~/.kube
 if [ -f "$MICROK8S_CONFIG" ]; then
-    cp "$MICROK8S_CONFIG" ~/.kube/config
+    sudo cp "$MICROK8S_CONFIG" ~/.kube/config
+    sudo chown $USER:$USER ~/.kube/config
     chmod 600 ~/.kube/config
     echo "MicroK8s kubeconfig copied to ~/.kube/config."
 else
@@ -46,7 +44,15 @@ grep -qxF "$ALIAS_LINE" "$SHELL_RC" || echo "$ALIAS_LINE" >> "$SHELL_RC"
 
 # Make alias available immediately in current shell
 alias k='k9s'
-echo "Alias 'k' set for k9s (works in this terminal and future ones)."
 
 # --- Step 5: Done ---
-echo "Setup complete! You can now run 'k9s' or simply 'k'."
+echo
+echo "Setup complete!"
+echo "k9s is installed, and the alias 'k' has been added to your shell."
+echo
+echo "Important:"
+echo "  - To use 'k' in this terminal immediately, run:  source ~/.bashrc"
+echo "  - MicroK8s will be detected by k9s only after you log out and log back in"
+echo "    (or reconnect via SSH), because new group permissions take effect at login."
+echo
+echo "After that, you can run 'k9s' or simply 'k' to manage your clusters."
