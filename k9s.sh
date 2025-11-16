@@ -14,6 +14,11 @@ sudo apt install -y ./k9s_linux_amd64.deb
 rm k9s_linux_amd64.deb
 echo "k9s installed successfully."
 
+# --- Step 1.5: Fix kubectl alias ---
+if ! command -v kubectl &> /dev/null; then
+    sudo snap alias microk8s.kubectl kubectl
+fi
+
 # --- Step 2: Ensure user is in microk8s group ---
 echo "Adding user '$USER' to microk8s group..."
 if groups $USER | grep &>/dev/null "\bmicrok8s\b"; then
