@@ -60,7 +60,9 @@ ING
 
 echo "[+] Updating /etc/hosts..."
 NODE_IP=$(hostname -I | awk '{print $1}')
-echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts > /dev/null
+if ! grep -q "dashboard.local" /etc/hosts; then
+    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts > /dev/null
+fi
 
 echo "[+] Waiting for admin token to be created..."
 sleep 5
@@ -69,12 +71,21 @@ echo "[+] Retrieving admin token..."
 ADMIN_SECRET=$(microk8s kubectl -n kube-system get secret | grep admin-user-token | awk '{print $1}')
 ADMIN_TOKEN=$(microk8s kubectl -n kube-system describe secret $ADMIN_SECRET | grep "token:" | awk '{print $2}')
 
+# Save token to file in user home
+TOKEN_FILE="/home/$USER/k8stoken.txt"
+echo "$ADMIN_TOKEN" > "$TOKEN_FILE"
+chown $USER:$USER "$TOKEN_FILE"
+
+# Get NodePort for dashboard service as alternative
+DASHBOARD_PORT=$(microk8s kubectl -n kube-system get svc kubernetes-dashboard -o jsonpath='{.spec.ports[0].nodePort}')
+
 echo "==========================================="
 echo " MicroK8s + Dashboard Installation Complete"
 echo "==========================================="
 echo "Dashboard URL: https://dashboard.local/"
+echo "Dashboard Node IP: $NODE_IP:$DASHBOARD_PORT (alternative if URL doesn't work)"
 echo ""
-echo "Admin Token:"
+echo "Admin Token (also saved to $TOKEN_FILE):"
 echo "$ADMIN_TOKEN"
 echo ""
 echo "==========================================="
