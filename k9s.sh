@@ -28,8 +28,7 @@ MICROK8S_CONFIG="/var/snap/microk8s/current/credentials/client.config"
 echo "Setting up kubeconfig..."
 mkdir -p ~/.kube
 if [ -f "$MICROK8S_CONFIG" ]; then
-    sudo cp "$MICROK8S_CONFIG" ~/.kube/config
-    sudo chown $USER:$USER ~/.kube/config
+    cp "$MICROK8S_CONFIG" ~/.kube/config
     chmod 600 ~/.kube/config
     echo "MicroK8s kubeconfig copied to ~/.kube/config."
 else
@@ -54,5 +53,4 @@ echo "Important:"
 echo "  - To use 'k' in this terminal immediately, run:  source ~/.bashrc"
 echo "  - MicroK8s will be detected by k9s only after you log out and log back in"
 echo "    (or reconnect via SSH), because new group permissions take effect at login."
-echo
-echo "After that, you can run 'k9s' or simply 'k' to manage your clusters."
+echo "  - After relogging, you can run 'k9s' or simply 'k' to manage your MicroK8s cluster."
