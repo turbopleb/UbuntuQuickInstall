@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -e
 
 echo "[+] Updating system..."
@@ -7,44 +7,44 @@ sudo apt update -y
 echo "[+] Installing MicroK8s..."
 sudo snap install microk8s --classic
 
-echo "[+] Adding user '$USER' to microk8s group..."
-sudo usermod -aG microk8s "$USER"
+USER_NAME=$(whoami)
+
+echo "[+] Adding user '$USER_NAME' to microk8s group..."
+sudo usermod -aG microk8s "$USER_NAME"
 
 echo "[+] Preparing kube directory..."
-mkdir -p ~/.kube
-sudo chown "$USER":"$USER" ~/.kube
+sudo mkdir -p /home/$USER_NAME/.kube
+sudo chown -R $USER_NAME:$USER_NAME /home/$USER_NAME/.kube
 
 echo "[+] Switching to newgrp 'microk8s' so no logout is required..."
-# After this line, heredoc content runs inside the new group environment
-newgrp microk8s << 'EOF'
-set -e
+newgrp microk8s <<'EOF'
 
-echo "[group-shell] Enabling MicroK8s add-ons..."
-sudo microk8s enable dns
-sudo microk8s enable storage
-sudo microk8s enable ingress
-sudo microk8s enable metrics-server
+echo "[+] Enabling MicroK8s add-ons..."
+microk8s enable dns
+microk8s enable hostpath-storage
+microk8s enable ingress
+microk8s enable metrics-server
 
-echo "[group-shell] Waiting for MicroK8s to be ready..."
-sudo microk8s status --wait-ready
+echo "[+] Enabling Kubernetes Dashboard..."
+microk8s enable dashboard
 
-echo "[group-shell] Enabling Kubernetes Dashboard..."
-sudo microk8s enable dashboard
+echo "[+] Creating admin service account + RBAC..."
+microk8s kubectl create serviceaccount admin-user -n kube-system || true
+microk8s kubectl create clusterrolebinding admin-user-binding \
+  --clusterrole=cluster-admin \
+  --serviceaccount=kube-system:admin-user || true
 
-echo "[group-shell] Exporting kubeconfig..."
-sudo microk8s kubectl config view --raw > ~/.kube/config
-sudo chown "$USER":"$USER" ~/.kube/config
-
-echo "[group-shell] Creating ingress for Kubernetes Dashboard..."
-sudo microk8s kubectl apply -f - <<EOT
+echo "[+] Creating Dashboard Ingress..."
+cat <<ING | microk8s kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: kubernetes-dashboard-ingress
+  name: kubernetes-dashboard
   namespace: kube-system
   annotations:
     nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
 spec:
+  ingressClassName: public
   rules:
   - host: dashboard.local
     http:
@@ -56,51 +56,27 @@ spec:
             name: kubernetes-dashboard
             port:
               number: 443
-EOT
+ING
 
-echo "[group-shell] Detecting node IP..."
+echo "[+] Updating /etc/hosts..."
 NODE_IP=$(hostname -I | awk '{print $1}')
+echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts > /dev/null
 
-echo "[group-shell] Updating /etc/hosts..."
-if ! grep -q "dashboard.local" /etc/hosts; then
-    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts
-fi
+echo "[+] Waiting for admin token to be created..."
+sleep 5
 
-echo "[group-shell] Creating admin user for Dashboard..."
-sudo microk8s kubectl apply -f - <<EOT
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: admin-user
-  namespace: kube-system
-EOT
+echo "[+] Retrieving admin token..."
+ADMIN_SECRET=$(microk8s kubectl -n kube-system get secret | grep admin-user-token | awk '{print $1}')
+ADMIN_TOKEN=$(microk8s kubectl -n kube-system describe secret $ADMIN_SECRET | grep "token:" | awk '{print $2}')
 
-sudo microk8s kubectl apply -f - <<EOT
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: admin-user
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: cluster-admin
-subjects:
-- kind: ServiceAccount
-  name: admin-user
-  namespace: kube-system
-EOT
-
-echo "[group-shell] Retrieving admin token..."
-ADMIN_TOKEN=$(sudo microk8s kubectl -n kube-system create token admin-user)
-
+echo "==========================================="
+echo " MicroK8s + Dashboard Installation Complete"
+echo "==========================================="
+echo "Dashboard URL: https://dashboard.local/"
 echo ""
-echo "============================================================"
-echo " MicroK8s Installation Complete! 🎉"
-echo ""
-echo " 🌐 Dashboard: https://dashboard.local/"
-echo ""
-echo " 🔑 Admin Token:"
+echo "Admin Token:"
 echo "$ADMIN_TOKEN"
-echo "============================================================"
+echo ""
+echo "==========================================="
 
 EOF
