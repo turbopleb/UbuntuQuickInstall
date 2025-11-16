@@ -74,7 +74,7 @@ chown $USER:$USER "$TOKEN_FILE"
 echo "==========================================="
 echo " MicroK8s + Dashboard Installation Complete"
 echo "==========================================="
-echo "Dashboard URL via Ingress (once k8s.local is in hosts file): https://k8s.local/"
+echo "Dashboard URL via Ingress (once k8s.local is in !YOUR LOCAL COMPUTER! hosts file): https://k8s.local/"
 echo ""
 echo "Admin Token (also saved to $TOKEN_FILE):"
 echo "$ADMIN_TOKEN"
@@ -86,12 +86,4 @@ echo "[!] NOTE: Your user has been permanently added to the 'microk8s' group."
 echo "[!] If you open a new terminal or run 'newgrp microk8s', your session will be updated"
 echo "[!] but the admin token displayed here will not persist. Save it now!"
 
-# -------- Dashboard readiness check --------
-echo "[+] Waiting for the Kubernetes Dashboard to become ready..."
-until microk8s kubectl -n kube-system get pods -l k8s-app=kubernetes-dashboard | grep Running >/dev/null; do
-    echo -n "."
-    sleep 2
-done
-echo ""
-echo "[+] Dashboard is ready at: https://k8s.local/"
 EOF
