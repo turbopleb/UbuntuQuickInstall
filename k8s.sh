@@ -1,5 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
+
+USER_NAME=$(whoami)
 
 echo "[+] Updating system..."
 sudo apt update -y
@@ -7,23 +9,26 @@ sudo apt update -y
 echo "[+] Installing MicroK8s..."
 sudo snap install microk8s --classic
 
-USER_NAME=$(whoami)
-
-echo "[+] Adding user '$USER_NAME' to microk8s group..."
-sudo usermod -aG microk8s "$USER_NAME"
+echo "[+] Permanently adding $USER_NAME to the microk8s group..."
+sudo usermod -aG microk8s $USER_NAME
 
 echo "[+] Preparing kube directory..."
-sudo mkdir -p /home/$USER_NAME/.kube
+mkdir -p /home/$USER_NAME/.kube
 sudo chown -R $USER_NAME:$USER_NAME /home/$USER_NAME/.kube
 
-echo "[+] Switching to newgrp 'microk8s' so no logout is required..."
-newgrp microk8s <<'EOF'
+echo "[+] Activating microk8s permissions in the current shell..."
+# Use sg to temporarily run a shell with correct group membership
+sg microk8s bash <<'EOGROUP'
+set -e
 
 echo "[+] Enabling MicroK8s add-ons..."
 microk8s enable dns
 microk8s enable hostpath-storage
 microk8s enable ingress
 microk8s enable metrics-server
+
+echo "[+] Waiting for MicroK8s to be ready..."
+microk8s status --wait-ready
 
 echo "[+] Enabling Kubernetes Dashboard..."
 microk8s enable dashboard
@@ -60,23 +65,31 @@ ING
 
 echo "[+] Updating /etc/hosts..."
 NODE_IP=$(hostname -I | awk '{print $1}')
-echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts > /dev/null
+if ! grep -q "dashboard.local" /etc/hosts; then
+    echo "$NODE_IP dashboard.local" | sudo tee -a /etc/hosts > /dev/null
+fi
 
-echo "[+] Waiting for admin token to be created..."
+echo "[+] Waiting a few seconds for admin secret creation..."
 sleep 5
 
 echo "[+] Retrieving admin token..."
 ADMIN_SECRET=$(microk8s kubectl -n kube-system get secret | grep admin-user-token | awk '{print $1}')
 ADMIN_TOKEN=$(microk8s kubectl -n kube-system describe secret $ADMIN_SECRET | grep "token:" | awk '{print $2}')
 
-echo "==========================================="
-echo " MicroK8s + Dashboard Installation Complete"
-echo "==========================================="
-echo "Dashboard URL: https://dashboard.local/"
 echo ""
-echo "Admin Token:"
+echo "=================================================="
+echo " MicroK8s + Dashboard Installation Complete! 🎉"
+echo " Dashboard URL: https://dashboard.local/"
+echo ""
+echo " Admin Token (use this to login):"
 echo "$ADMIN_TOKEN"
-echo ""
-echo "==========================================="
+echo "=================================================="
 
-EOF
+# Export kubeconfig for the user
+microk8s kubectl config view --raw > /home/$USER/.kube/config
+chown $USER:$USER /home/$USER/.kube/config
+
+EOGROUP
+
+echo ""
+echo "[+] Installation finished! You now have full MicroK8s access without logout."
