@@ -33,10 +33,11 @@ k() { microk8s kubectl "$@"; }
 export -f k
 echo "[+] Use 'k' in this shell to run kubectl commands, or 'k9s' to launch K9s."
 
+# === Determine external node IP ===
+DASHBOARD_IP=$(ip route get 1 | awk '{print $7; exit}')
+
 # === Wait for dashboard NodePort to be ready ===
 echo "[+] Checking if Kubernetes Dashboard NodePort is ready..."
-DASHBOARD_IP=$(hostname -I | awk '{print $1}')
-
 until NODEPORT=$(microk8s kubectl -n kube-system get svc kubernetes-dashboard -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null) && [ -n "$NODEPORT" ]; do
     echo -n "."
     sleep 2
@@ -44,7 +45,7 @@ done
 echo ""
 echo "[+] Kubernetes Dashboard is available at NodePort: https://${DASHBOARD_IP}:${NODEPORT}/"
 
-# === Optionally check dashboard availability ===
+# === Wait until dashboard responds on correct NodeIP:NodePort ===
 echo "[+] Waiting for Kubernetes Dashboard to respond..."
 until curl -k -s "https://${DASHBOARD_IP}:${NODEPORT}/" > /dev/null; do
     echo -n "."
