@@ -2,8 +2,8 @@
 
 # MicroK8s Deployment Script:
 # Nginx Proxy Manager + Kubernetes Dashboard
-# TLS always enabled
-# Admin panel served as the main site on https://nginx.local
+# TLS enabled for main site
+# Admin panel exposed via NodePort for full functionality
 # Idempotent & safe to re-run
 
 set -euo pipefail
@@ -27,6 +27,7 @@ microk8s enable ingress >/dev/null 2>&1 || true
 NPM_NAMESPACE="nginx"
 NPM_HOSTNAME="nginx.local"
 NPM_TLS_SECRET="nginx-tls"
+ADMIN_NODEPORT=30801
 
 echo "=== Ensuring namespace exists: $NPM_NAMESPACE ==="
 $MICROK8S_KUBECTL get ns $NPM_NAMESPACE >/dev/null 2>&1 || \
@@ -53,7 +54,9 @@ spec:
       - name: npm
         image: jc21/nginx-proxy-manager:latest
         ports:
-        - containerPort: 443   # Serve admin panel as main site
+        - containerPort: 80
+        - containerPort: 81
+        - containerPort: 443
         env:
         - name: DB_SQLITE_FILE
           value: "/data/database.sqlite"
@@ -80,10 +83,17 @@ spec:
   selector:
     app: nginx-proxy-manager
   ports:
+    - name: http
+      port: 80
+      targetPort: 80
+    - name: admin
+      port: 81
+      targetPort: 81
+      nodePort: $ADMIN_NODEPORT
     - name: https
       port: 443
       targetPort: 443
-  type: ClusterIP
+  type: NodePort
 EOF
 
 echo "=== Creating self-signed TLS for Nginx Proxy Manager ==="
@@ -99,7 +109,7 @@ $MICROK8S_KUBECTL create secret tls $NPM_TLS_SECRET \
   --cert=npm.crt \
   --key=npm.key
 
-echo "=== Creating Ingress for Nginx Proxy Manager ==="
+echo "=== Creating Ingress for Nginx Proxy Manager (main site only) ==="
 $MICROK8S_KUBECTL apply -n $NPM_NAMESPACE -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -123,7 +133,7 @@ spec:
           service:
             name: nginx-proxy-manager
             port:
-              number: 443
+              number: 80
 EOF
 
 $MICROK8S_KUBECTL rollout status deployment/nginx-proxy-manager -n $NPM_NAMESPACE
@@ -193,7 +203,9 @@ done
 
 echo ""
 echo "=== DONE ==="
-echo "Nginx Proxy Manager admin panel now accessible at: https://$NPM_HOSTNAME"
+echo "Nginx Proxy Manager admin panel accessible at:"
+echo "   http://$NODE_IP:$ADMIN_NODEPORT  (full admin panel)"
+echo "Main site placeholder at: https://$NPM_HOSTNAME"
 echo "Kubernetes Dashboard: https://$K8S_HOSTNAME"
 echo ""
 echo "(Browsers will show a warning because these are self-signed certificates.)"
