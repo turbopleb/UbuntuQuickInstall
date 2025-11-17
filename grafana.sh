@@ -30,17 +30,12 @@ microk8s status --wait-ready >/dev/null
 
 # Detect node IP
 NODE_IP=$(hostname -I | awk '{print $1}')
-if [[ -z "$NODE_IP" ]]; then
-    echo "ERROR: Could not detect node IP"
-    exit 1
-fi
 echo "Detected node IP: $NODE_IP"
 
 # Ensure monitoring namespace exists
-$MICROK8S_KUBECTL get ns $NAMESPACE >/dev/null 2>&1 || \
-    $MICROK8S_KUBECTL create ns $NAMESPACE
+$MICROK8S_KUBECTL get ns $NAMESPACE >/dev/null 2>&1 || $MICROK8S_KUBECTL create ns $NAMESPACE
 
-# Create PVC for Grafana data
+# Create PVC for Grafana
 $MICROK8S_KUBECTL apply -n $NAMESPACE -f - <<EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -86,7 +81,7 @@ spec:
           claimName: $PVC_NAME
 EOF
 
-# Expose ClusterIP service
+# Service
 $MICROK8S_KUBECTL apply -n $NAMESPACE -f - <<EOF
 apiVersion: v1
 kind: Service
@@ -103,21 +98,20 @@ spec:
   type: ClusterIP
 EOF
 
-# Generate self-signed TLS
+# TLS
 openssl req -x509 -nodes -days 365 \
     -newkey rsa:2048 \
     -keyout grafana.key \
     -out grafana.crt \
     -subj "/CN=${HOSTNAME}/O=LocalOrg" >/dev/null 2>&1
 
-# Create TLS Secret
 $MICROK8S_KUBECTL delete secret $TLS_SECRET -n $NAMESPACE --ignore-not-found >/dev/null 2>&1
 $MICROK8S_KUBECTL create secret tls $TLS_SECRET \
     --namespace=$NAMESPACE \
     --cert=grafana.crt \
     --key=grafana.key
 
-# Apply Ingress with TLS
+# Ingress
 $MICROK8S_KUBECTL apply -n $NAMESPACE -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -144,17 +138,16 @@ spec:
               number: 3000
 EOF
 
-# Wait for rollout
 $MICROK8S_KUBECTL rollout status deployment/grafana -n $NAMESPACE
 
-# Update /etc/hosts
+# /etc/hosts
 if grep -q "$HOSTNAME" /etc/hosts; then
     sudo sed -i "s/.*$HOSTNAME/$NODE_IP $HOSTNAME/" /etc/hosts
 else
     echo "$NODE_IP $HOSTNAME" | sudo tee -a /etc/hosts >/dev/null
 fi
 
-# === Add Proxy Host to Nginx Proxy Manager via API ===
+# === NPM Proxy Host ===
 echo "=== Configuring Nginx Proxy Manager for $HOSTNAME ==="
 NPM_POD=$($MICROK8S_KUBECTL get pod -n $NPM_NAMESPACE -l $NPM_SERVICE_LABEL -o jsonpath='{.items[0].metadata.name}')
 $MICROK8S_KUBECTL exec -n $NPM_NAMESPACE $NPM_POD -- /bin/sh -c "
@@ -166,9 +159,7 @@ curl -s -X POST http://localhost:81/api/nginx/proxy-hosts \
   \"forward_host\": \"$NODE_IP\",
   \"forward_port\": 3000,
   \"ssl\": true,
-  \"ssl_forced\": true,
-  \"cache_enabled\": false,
-  \"block_exploits\": false
+  \"ssl_forced\": true
 }' || echo 'Proxy host might already exist or NPM API unavailable'
 "
 
