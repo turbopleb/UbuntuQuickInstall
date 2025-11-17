@@ -1,7 +1,9 @@
 #!/bin/bash
 
-# MicroK8s Deployment Script: Nginx Proxy Manager + Kubernetes Dashboard
-# TLS always enabled, admin panel accessible at /admin
+# MicroK8s Deployment Script:
+# Nginx Proxy Manager + Kubernetes Dashboard
+# TLS always enabled
+# Admin panel served as the main site on https://nginx.local
 # Idempotent & safe to re-run
 
 set -euo pipefail
@@ -51,9 +53,7 @@ spec:
       - name: npm
         image: jc21/nginx-proxy-manager:latest
         ports:
-        - containerPort: 80
-        - containerPort: 81
-        - containerPort: 443
+        - containerPort: 443   # Serve admin panel as main site
         env:
         - name: DB_SQLITE_FILE
           value: "/data/database.sqlite"
@@ -80,12 +80,6 @@ spec:
   selector:
     app: nginx-proxy-manager
   ports:
-    - name: http
-      port: 80
-      targetPort: 80
-    - name: ui
-      port: 81
-      targetPort: 81
     - name: https
       port: 443
       targetPort: 443
@@ -113,7 +107,7 @@ metadata:
   name: nginx-proxy-manager-ingress
   namespace: $NPM_NAMESPACE
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
 spec:
   tls:
   - hosts:
@@ -129,14 +123,7 @@ spec:
           service:
             name: nginx-proxy-manager
             port:
-              number: 80
-      - path: /admin
-        pathType: Prefix
-        backend:
-          service:
-            name: nginx-proxy-manager
-            port:
-              number: 81
+              number: 443
 EOF
 
 $MICROK8S_KUBECTL rollout status deployment/nginx-proxy-manager -n $NPM_NAMESPACE
@@ -206,7 +193,7 @@ done
 
 echo ""
 echo "=== DONE ==="
-echo "Nginx Proxy Manager: https://$NPM_HOSTNAME/ (site) & https://$NPM_HOSTNAME/admin (admin panel)"
+echo "Nginx Proxy Manager admin panel now accessible at: https://$NPM_HOSTNAME"
 echo "Kubernetes Dashboard: https://$K8S_HOSTNAME"
 echo ""
 echo "(Browsers will show a warning because these are self-signed certificates.)"
