@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Argo CD installer for MicroK8s
-# Fully automated, idempotent, uses node IP in /etc/hosts
+# Fully automated, idempotent
+# Uses node IP in /etc/hosts
 # Requires manual addition to Nginx Proxy Manager
-# TLS handled via argocd-server service
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ $MICROK8S_KUBECTL get ns "$NAMESPACE" >/dev/null 2>&1 || \
 echo "=== Deploying Argo CD ==="
 $MICROK8S_KUBECTL apply -n "$NAMESPACE" -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-echo "=== Waiting for all pods in $NAMESPACE to be Ready ==="
+echo "=== Waiting for all pods in $NAMESPACE to be ready ==="
 while true; do
     NOT_READY=$($MICROK8S_KUBECTL -n "$NAMESPACE" get pods --no-headers 2>/dev/null | \
         awk '{if($3!="Running" && $3!="Completed") print $0}' | wc -l)
@@ -37,6 +37,18 @@ while true; do
         sleep 5
     fi
 done
+
+echo "=== Creating TLS secret for Argo CD server ==="
+$MICROK8S_KUBECTL delete secret argocd-server-tls -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1
+openssl req -x509 -nodes -days 365 \
+    -newkey rsa:2048 \
+    -keyout tls.key \
+    -out tls.crt \
+    -subj "/CN=${INGRESS_HOST}/O=LocalOrg" >/dev/null 2>&1
+$MICROK8S_KUBECTL create secret tls argocd-server-tls \
+    --namespace="$NAMESPACE" \
+    --cert=tls.crt \
+    --key=tls.key
 
 echo "=== Creating Ingress for Argo CD ==="
 $MICROK8S_KUBECTL apply -n "$NAMESPACE" -f - <<EOF
@@ -62,10 +74,9 @@ spec:
           service:
             name: argocd-server
             port:
-              number: 443
+              number: 80
 EOF
 
-# Detect node IP dynamically
 NODE_IP=$(hostname -I | awk '{print $1}')
 echo "Detected node IP: $NODE_IP"
 
