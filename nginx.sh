@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# MicroK8s Deployment Script: Full Nginx Proxy Manager + Kubernetes Dashboard
-# TLS always enabled
+# MicroK8s Deployment Script: Nginx Proxy Manager + Kubernetes Dashboard
+# TLS always enabled, admin panel accessible at /admin
 # Idempotent & safe to re-run
 
 set -euo pipefail
@@ -130,6 +130,13 @@ spec:
             name: nginx-proxy-manager
             port:
               number: 80
+      - path: /admin
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-proxy-manager
+            port:
+              number: 81
 EOF
 
 $MICROK8S_KUBECTL rollout status deployment/nginx-proxy-manager -n $NPM_NAMESPACE
@@ -199,7 +206,7 @@ done
 
 echo ""
 echo "=== DONE ==="
-echo "Nginx Proxy Manager: https://$NPM_HOSTNAME"
+echo "Nginx Proxy Manager: https://$NPM_HOSTNAME/ (site) & https://$NPM_HOSTNAME/admin (admin panel)"
 echo "Kubernetes Dashboard: https://$K8S_HOSTNAME"
 echo ""
 echo "(Browsers will show a warning because these are self-signed certificates.)"
