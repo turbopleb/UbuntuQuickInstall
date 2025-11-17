@@ -1,22 +1,16 @@
 #!/bin/bash
 
-# MicroK8s Nginx Deployment Script (TLS Always Enabled)
+# MicroK8s Deployment Script: Nginx Proxy Manager + Kubernetes Dashboard
+# TLS always enabled
 # Idempotent & safe to re-run
-# Exposes Nginx at https://nginx.local
+# Exposes:
+#   - https://nginx.local → Nginx Proxy Manager
+#   - https://k8s.local → Kubernetes Dashboard
 
-set -e
+set -euo pipefail
 
 USER_NAME=$(whoami)
 MICROK8S_KUBECTL="microk8s kubectl"
-NAMESPACE="nginx"
-HOSTNAME="nginx.local"
-
-echo "=== Running as user: $USER_NAME ==="
-
-echo "=== Waiting for MicroK8s to be ready ==="
-microk8s status --wait-ready >/dev/null
-
-echo "=== Detecting node IP ==="
 NODE_IP=$(hostname -I | awk '{print $1}')
 if [[ -z "$NODE_IP" ]]; then
     echo "ERROR: Could not detect node IP"
@@ -24,108 +18,175 @@ if [[ -z "$NODE_IP" ]]; then
 fi
 echo "Detected node IP: $NODE_IP"
 
-echo "=== Ensuring namespace exists ==="
-$MICROK8S_KUBECTL get ns $NAMESPACE >/dev/null 2>&1 || \
-$MICROK8S_KUBECTL create ns $NAMESPACE
+# Enable ingress addon
+echo "=== Enabling MicroK8s ingress module ==="
+microk8s enable ingress >/dev/null 2>&1 || true
 
-echo "=== Applying Nginx Deployment ==="
-$MICROK8S_KUBECTL apply -f - <<EOF
+# -----------------------------
+# 1️⃣ Deploy Nginx Proxy Manager
+# -----------------------------
+NPM_NAMESPACE="nginx"
+NPM_HOSTNAME="nginx.local"
+NPM_TLS_SECRET="nginx-tls"
+
+echo "=== Ensuring namespace exists: $NPM_NAMESPACE ==="
+$MICROK8S_KUBECTL get ns $NPM_NAMESPACE >/dev/null 2>&1 || \
+$MICROK8S_KUBECTL create ns $NPM_NAMESPACE
+
+echo "=== Deploying Nginx Proxy Manager ==="
+$MICROK8S_KUBECTL apply -n $NPM_NAMESPACE -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nginx
-  namespace: $NAMESPACE
+  name: nginx-proxy-manager
+  namespace: $NPM_NAMESPACE
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: nginx
+      app: nginx-proxy-manager
   template:
     metadata:
       labels:
-        app: nginx
+        app: nginx-proxy-manager
     spec:
       containers:
-      - name: nginx
-        image: nginx:latest
+      - name: npm
+        image: jc21/nginx-proxy-manager:latest
         ports:
         - containerPort: 80
+        - containerPort: 81
+        - containerPort: 443
 EOF
 
-echo "=== Applying Service ==="
-$MICROK8S_KUBECTL apply -f - <<EOF
+echo "=== Exposing Nginx Proxy Manager Service ==="
+$MICROK8S_KUBECTL apply -n $NPM_NAMESPACE -f - <<EOF
 apiVersion: v1
 kind: Service
 metadata:
-  name: nginx-service
-  namespace: $NAMESPACE
+  name: nginx-proxy-manager
+  namespace: $NPM_NAMESPACE
 spec:
   selector:
-    app: nginx
+    app: nginx-proxy-manager
   ports:
     - port: 80
       targetPort: 80
+    - port: 81
+      targetPort: 81
+    - port: 443
+      targetPort: 443
   type: ClusterIP
 EOF
 
-echo "=== Generating self-signed TLS certificate ==="
+echo "=== Creating self-signed TLS for Nginx Proxy Manager ==="
 openssl req -x509 -nodes -days 365 \
-    -newkey rsa:2048 \
-    -keyout tls.key \
-    -out tls.crt \
-    -subj "/CN=${HOSTNAME}/O=LocalOrg" >/dev/null 2>&1
+  -newkey rsa:2048 \
+  -keyout npm.key \
+  -out npm.crt \
+  -subj "/CN=$NPM_HOSTNAME/O=LocalOrg" >/dev/null 2>&1
 
-echo "=== Creating TLS Secret ==="
-$MICROK8S_KUBECTL delete secret nginx-tls -n $NAMESPACE --ignore-not-found >/dev/null 2>&1
-$MICROK8S_KUBECTL create secret tls nginx-tls \
-    --namespace=$NAMESPACE \
-    --cert=tls.crt \
-    --key=tls.key
+$MICROK8S_KUBECTL delete secret $NPM_TLS_SECRET -n $NPM_NAMESPACE --ignore-not-found
+$MICROK8S_KUBECTL create secret tls $NPM_TLS_SECRET \
+  --namespace=$NPM_NAMESPACE \
+  --cert=npm.crt \
+  --key=npm.key
 
-echo "=== Applying Ingress with TLS enabled ==="
-$MICROK8S_KUBECTL apply -f - <<EOF
+echo "=== Creating Ingress for Nginx Proxy Manager ==="
+$MICROK8S_KUBECTL apply -n $NPM_NAMESPACE -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: nginx-ingress
-  namespace: $NAMESPACE
+  name: nginx-proxy-manager-ingress
+  namespace: $NPM_NAMESPACE
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   tls:
   - hosts:
-    - $HOSTNAME
-    secretName: nginx-tls
+    - $NPM_HOSTNAME
+    secretName: $NPM_TLS_SECRET
   rules:
-  - host: $HOSTNAME
+  - host: $NPM_HOSTNAME
     http:
       paths:
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: nginx-service
+            name: nginx-proxy-manager
             port:
               number: 80
 EOF
 
-echo "=== Waiting for Deployment rollout ==="
-$MICROK8S_KUBECTL rollout status deployment/nginx -n $NAMESPACE
+$MICROK8S_KUBECTL rollout status deployment/nginx-proxy-manager -n $NPM_NAMESPACE
 
-echo "=== Ensuring MicroK8s ingress module is enabled ==="
-microk8s enable ingress >/dev/null 2>&1 || true
+# -----------------------------
+# 2️⃣ Deploy Kubernetes Dashboard
+# -----------------------------
+K8S_HOSTNAME="k8s.local"
+K8S_NAMESPACE="kube-system"
+K8S_TLS_SECRET="k8s-tls"
 
-echo "=== Updating /etc/hosts ==="
-if grep -q "$HOSTNAME" /etc/hosts; then
-    echo "Updating existing /etc/hosts entry..."
-    sudo sed -i "s/.*$HOSTNAME/$NODE_IP $HOSTNAME/" /etc/hosts
-else
-    echo "$NODE_IP $HOSTNAME" | sudo tee -a /etc/hosts >/dev/null
-fi
+echo "=== Enabling Kubernetes Dashboard ==="
+microk8s enable dashboard >/dev/null 2>&1 || true
+
+echo "=== Creating self-signed TLS for Kubernetes Dashboard ==="
+openssl req -x509 -nodes -days 365 \
+  -newkey rsa:2048 \
+  -keyout k8s.key \
+  -out k8s.crt \
+  -subj "/CN=$K8S_HOSTNAME/O=LocalOrg" >/dev/null 2>&1
+
+$MICROK8S_KUBECTL delete secret $K8S_TLS_SECRET -n $K8S_NAMESPACE --ignore-not-found
+$MICROK8S_KUBECTL create secret tls $K8S_TLS_SECRET \
+  --namespace=$K8S_NAMESPACE \
+  --cert=k8s.crt \
+  --key=k8s.key
+
+echo "=== Creating Ingress for Kubernetes Dashboard ==="
+$MICROK8S_KUBECTL apply -n $K8S_NAMESPACE -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kubernetes-dashboard-ingress
+  namespace: $K8S_NAMESPACE
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+spec:
+  tls:
+  - hosts:
+    - $K8S_HOSTNAME
+    secretName: $K8S_TLS_SECRET
+  rules:
+  - host: $K8S_HOSTNAME
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: kubernetes-dashboard
+            port:
+              number: 443
+EOF
+
+# -----------------------------
+# 3️⃣ Update /etc/hosts
+# -----------------------------
+for host in $NPM_HOSTNAME $K8S_HOSTNAME; do
+    if grep -q "$host" /etc/hosts; then
+        echo "Updating /etc/hosts for $host..."
+        sudo sed -i "s/.*$host/$NODE_IP $host/" /etc/hosts
+    else
+        echo "Adding /etc/hosts entry for $host..."
+        echo "$NODE_IP $host" | sudo tee -a /etc/hosts >/dev/null
+    fi
+done
 
 echo ""
 echo "=== DONE ==="
-echo "Nginx is available at:"
-echo "   https://$HOSTNAME"
+echo "Nginx Proxy Manager: https://$NPM_HOSTNAME"
+echo "Kubernetes Dashboard: https://$K8S_HOSTNAME"
 echo ""
-echo "(A browser warning will appear because this is a self-signed certificate.)"
+echo "(Browsers will show a warning because these are self-signed certificates.)"
