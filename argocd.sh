@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # Argo CD installer for MicroK8s
-# Fully automated, idempotent, exposes via Ingress at argocd.local
-# Uses dynamic pod readiness check
+# Fully automated, idempotent, uses node IP in /etc/hosts
+# Requires manual addition to Nginx Proxy Manager
+# TLS handled via argocd-server service
 
-set -e
+set -euo pipefail
 
 MICROK8S_KUBECTL="microk8s kubectl"
 NAMESPACE="argocd"
@@ -13,17 +14,19 @@ INGRESS_HOST="argocd.local"
 echo "=== Ensuring MicroK8s is ready ==="
 sudo microk8s status --wait-ready >/dev/null
 
+echo "=== Enabling Ingress if not already ==="
+microk8s enable ingress >/dev/null 2>&1 || true
+
 echo "=== Creating namespace $NAMESPACE ==="
-$MICROK8S_KUBECTL get namespace $NAMESPACE >/dev/null 2>&1 || \
-    $MICROK8S_KUBECTL create namespace $NAMESPACE
+$MICROK8S_KUBECTL get ns "$NAMESPACE" >/dev/null 2>&1 || \
+    $MICROK8S_KUBECTL create ns "$NAMESPACE"
 
 echo "=== Deploying Argo CD ==="
-# Apply official Argo CD manifests
-$MICROK8S_KUBECTL apply -n $NAMESPACE -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+$MICROK8S_KUBECTL apply -n "$NAMESPACE" -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
 echo "=== Waiting for all pods in $NAMESPACE to be Ready ==="
 while true; do
-    NOT_READY=$($MICROK8S_KUBECTL -n $NAMESPACE get pods --no-headers 2>/dev/null | \
+    NOT_READY=$($MICROK8S_KUBECTL -n "$NAMESPACE" get pods --no-headers 2>/dev/null | \
         awk '{if($3!="Running" && $3!="Completed") print $0}' | wc -l)
     
     if [ "$NOT_READY" -eq 0 ]; then
@@ -36,14 +39,19 @@ while true; do
 done
 
 echo "=== Creating Ingress for Argo CD ==="
-$MICROK8S_KUBECTL apply -n $NAMESPACE -f - <<EOF
+$MICROK8S_KUBECTL apply -n "$NAMESPACE" -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: argocd-ingress
+  namespace: $NAMESPACE
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
+  tls:
+  - hosts:
+    - $INGRESS_HOST
+    secretName: argocd-server-tls
   rules:
   - host: $INGRESS_HOST
     http:
@@ -57,17 +65,32 @@ spec:
               number: 443
 EOF
 
+# Detect node IP dynamically
+NODE_IP=$(hostname -I | awk '{print $1}')
+echo "Detected node IP: $NODE_IP"
+
 echo "=== Updating /etc/hosts ==="
-if ! grep -q "$INGRESS_HOST" /etc/hosts; then
-    echo "127.0.0.1 $INGRESS_HOST" | sudo tee -a /etc/hosts
+if grep -q "$INGRESS_HOST" /etc/hosts; then
+    sudo sed -i "s/.*$INGRESS_HOST/$NODE_IP $INGRESS_HOST/" /etc/hosts
+else
+    echo "$NODE_IP $INGRESS_HOST" | sudo tee -a /etc/hosts >/dev/null
 fi
 
 echo ""
-echo "=== MANUAL STEPS / NOTES ==="
-echo "1. Argo CD URL: https://$INGRESS_HOST"
-echo "2. Initial admin password:"
-echo "   Run: $MICROK8S_KUBECTL -n $NAMESPACE get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
-echo "3. Namespace: $NAMESPACE"
-echo "4. Hosts file updated automatically."
-echo "5. Ensure Ingress addon is enabled in MicroK8s:"
-echo "   sudo microk8s enable ingress"
+echo "=== DONE ==="
+echo "Argo CD is deployed and available at:"
+echo "   https://$INGRESS_HOST"
+echo ""
+echo "Initial admin password:"
+echo "   $($MICROK8S_KUBECTL -n $NAMESPACE get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
+echo ""
+echo "To integrate Argo CD into Nginx Proxy Manager:"
+echo "1. Open Nginx Proxy Manager Admin panel."
+echo "2. Go to 'Proxy Hosts' → 'Add Proxy Host'."
+echo "3. Set Domain Names to: $INGRESS_HOST"
+echo "4. Forward Hostname / IP: $NODE_IP"
+echo "5. Forward Port: 443"
+echo "6. Scheme: https"
+echo "7. Save. Argo CD should now appear in the NPM dashboard."
+echo ""
+echo "(Browsers may show a warning due to self-signed certificate.)"
