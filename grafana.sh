@@ -1,8 +1,10 @@
 #!/bin/bash
 
-# MicroK8s Grafana Deployment + Nginx Proxy Manager integration
-# TLS enabled, PVC for persistence, automatic NPM proxy host
-# Fully idempotent and dynamic for any machine
+# MicroK8s Grafana Deployment Script
+# TLS enabled, PVC for persistence
+# Exposes Grafana at https://grafana.local via Kubernetes Ingress
+# Prints instructions for adding Grafana to Nginx Proxy Manager
+# Fully idempotent and dynamic
 
 set -euo pipefail
 
@@ -12,8 +14,6 @@ GRAFANA_NAMESPACE="monitoring"
 GRAFANA_HOSTNAME="grafana.local"
 GRAFANA_TLS_SECRET="grafana-tls"
 GRAFANA_PVC="grafana-data-pvc"
-NPM_NAMESPACE="nginx"
-NPM_LABEL="app=nginx-proxy-manager"
 
 echo "=== Ensuring user has MicroK8s permissions ==="
 if ! groups "$USER_NAME" | grep -q "\bmicrok8s\b"; then
@@ -98,7 +98,7 @@ spec:
   type: ClusterIP
 EOF
 
-# TLS
+# TLS Secret
 openssl req -x509 -nodes -days 365 \
     -newkey rsa:2048 \
     -keyout grafana.key \
@@ -148,27 +148,20 @@ else
     echo "$NODE_IP $GRAFANA_HOSTNAME" | sudo tee -a /etc/hosts >/dev/null
 fi
 
-# Wait for NPM pod ready
-echo "=== Waiting for Nginx Proxy Manager pod to be ready ==="
-NPM_POD=$($MICROK8S_KUBECTL get pod -n "$NPM_NAMESPACE" -l "$NPM_LABEL" -o jsonpath='{.items[0].metadata.name}')
-$MICROK8S_KUBECTL wait --for=condition=Ready pod/$NPM_POD -n "$NPM_NAMESPACE" --timeout=120s
-
-# === Add Proxy Host in NPM via API ===
-echo "=== Creating proxy host in Nginx Proxy Manager for $GRAFANA_HOSTNAME ==="
-$MICROK8S_KUBECTL exec -n "$NPM_NAMESPACE" "$NPM_POD" -- /bin/sh -c "
-curl -s -X POST http://localhost:81/api/nginx/proxy-hosts \
--H 'Content-Type: application/json' \
--d '{
-  \"domain_names\": [\"$GRAFANA_HOSTNAME\"],
-  \"forward_scheme\": \"http\",
-  \"forward_host\": \"$NODE_IP\",
-  \"forward_port\": 3000,
-  \"ssl\": true
-}' || echo 'Proxy host may already exist or NPM API not ready'
-"
-
+# Final instructions
 echo ""
 echo "=== DONE ==="
-echo "Grafana URL via Nginx Proxy Manager: https://$GRAFANA_HOSTNAME"
+echo "Grafana is deployed and available via Kubernetes Ingress:"
+echo "   https://$GRAFANA_HOSTNAME"
 echo "Default login: admin / admin (change password immediately)"
 echo "(Browsers may show a warning due to self-signed certificate.)"
+echo ""
+echo "To integrate Grafana into Nginx Proxy Manager:"
+echo "1. Open Nginx Proxy Manager Admin panel."
+echo "2. Go to 'Proxy Hosts' → 'Add Proxy Host'."
+echo "3. Set Domain Names to: $GRAFANA_HOSTNAME"
+echo "4. Forward Hostname / IP: $NODE_IP"
+echo "5. Forward Port: 3000"
+echo "6. Scheme: http"
+echo "7. Enable SSL if desired (optional, your Ingress already provides TLS)."
+echo "8. Save. Grafana should now appear in the NPM dashboard."
