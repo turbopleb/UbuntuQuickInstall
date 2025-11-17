@@ -1,11 +1,8 @@
 #!/bin/bash
 
-# MicroK8s Deployment Script: Nginx Proxy Manager + Kubernetes Dashboard
+# MicroK8s Deployment Script: Full Nginx Proxy Manager + Kubernetes Dashboard
 # TLS always enabled
 # Idempotent & safe to re-run
-# Exposes:
-#   - https://nginx.local → Nginx Proxy Manager
-#   - https://k8s.local → Kubernetes Dashboard
 
 set -euo pipefail
 
@@ -18,12 +15,12 @@ if [[ -z "$NODE_IP" ]]; then
 fi
 echo "Detected node IP: $NODE_IP"
 
-# Enable ingress addon
+# Enable ingress
 echo "=== Enabling MicroK8s ingress module ==="
 microk8s enable ingress >/dev/null 2>&1 || true
 
 # -----------------------------
-# 1️⃣ Deploy Nginx Proxy Manager
+# 1️⃣ Nginx Proxy Manager
 # -----------------------------
 NPM_NAMESPACE="nginx"
 NPM_HOSTNAME="nginx.local"
@@ -57,6 +54,19 @@ spec:
         - containerPort: 80
         - containerPort: 81
         - containerPort: 443
+        env:
+        - name: DB_SQLITE_FILE
+          value: "/data/database.sqlite"
+        volumeMounts:
+        - name: npm-data
+          mountPath: /data
+        - name: npm-lets
+          mountPath: /etc/letsencrypt
+      volumes:
+      - name: npm-data
+        emptyDir: {}
+      - name: npm-lets
+        emptyDir: {}
 EOF
 
 echo "=== Exposing Nginx Proxy Manager Service ==="
@@ -125,10 +135,10 @@ EOF
 $MICROK8S_KUBECTL rollout status deployment/nginx-proxy-manager -n $NPM_NAMESPACE
 
 # -----------------------------
-# 2️⃣ Deploy Kubernetes Dashboard
+# 2️⃣ Kubernetes Dashboard
 # -----------------------------
-K8S_HOSTNAME="k8s.local"
 K8S_NAMESPACE="kube-system"
+K8S_HOSTNAME="k8s.local"
 K8S_TLS_SECRET="k8s-tls"
 
 echo "=== Enabling Kubernetes Dashboard ==="
