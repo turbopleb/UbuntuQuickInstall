@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # MicroK8s Deployment Script:
-# Nginx Proxy Manager + Kubernetes Dashboard
+# Nginx Proxy Manager + Kubernetes Dashboard with PVCs
 # TLS enabled for main site
 # Admin panel exposed via NodePort for full functionality
 # Idempotent & safe to re-run
@@ -22,7 +22,7 @@ echo "=== Enabling MicroK8s ingress module ==="
 microk8s enable ingress >/dev/null 2>&1 || true
 
 # -----------------------------
-# 1️⃣ Nginx Proxy Manager
+# 1️⃣ Nginx Proxy Manager with PVCs
 # -----------------------------
 NPM_NAMESPACE="nginx"
 NPM_HOSTNAME="nginx.local"
@@ -32,6 +32,33 @@ ADMIN_NODEPORT=30801
 echo "=== Ensuring namespace exists: $NPM_NAMESPACE ==="
 $MICROK8S_KUBECTL get ns $NPM_NAMESPACE >/dev/null 2>&1 || \
 $MICROK8S_KUBECTL create ns $NPM_NAMESPACE
+
+echo "=== Creating PVCs for NPM data and letsencrypt ==="
+$MICROK8S_KUBECTL apply -n $NPM_NAMESPACE -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: npm-data-pvc
+  namespace: $NPM_NAMESPACE
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: npm-lets-pvc
+  namespace: $NPM_NAMESPACE
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 512Mi
+EOF
 
 echo "=== Deploying Nginx Proxy Manager ==="
 $MICROK8S_KUBECTL apply -n $NPM_NAMESPACE -f - <<EOF
@@ -67,9 +94,11 @@ spec:
           mountPath: /etc/letsencrypt
       volumes:
       - name: npm-data
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: npm-data-pvc
       - name: npm-lets
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: npm-lets-pvc
 EOF
 
 echo "=== Exposing Nginx Proxy Manager Service ==="
@@ -96,7 +125,7 @@ spec:
   type: NodePort
 EOF
 
-echo "=== Creating self-signed TLS for Nginx Proxy Manager ==="
+echo "=== Creating self-signed TLS for NPM ==="
 openssl req -x509 -nodes -days 365 \
   -newkey rsa:2048 \
   -keyout npm.key \
@@ -109,7 +138,7 @@ $MICROK8S_KUBECTL create secret tls $NPM_TLS_SECRET \
   --cert=npm.crt \
   --key=npm.key
 
-echo "=== Creating Ingress for Nginx Proxy Manager (main site only) ==="
+echo "=== Creating Ingress for NPM main site ==="
 $MICROK8S_KUBECTL apply -n $NPM_NAMESPACE -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -204,7 +233,7 @@ done
 echo ""
 echo "=== DONE ==="
 echo "Nginx Proxy Manager admin panel accessible at:"
-echo "   http://$NODE_IP:$ADMIN_NODEPORT  (full admin panel)"
+echo "   http://$NODE_IP:$ADMIN_NODEPORT  (full admin panel with persistent data)"
 echo "Main site placeholder at: https://$NPM_HOSTNAME"
 echo "Kubernetes Dashboard: https://$K8S_HOSTNAME"
 echo ""
