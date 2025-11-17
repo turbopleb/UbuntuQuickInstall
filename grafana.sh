@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# MicroK8s Grafana Deployment Script with PVCs (TLS Enabled)
-# Idempotent & safe to re-run
-# Exposes Grafana via Ingress on grafana.local
-# Run as normal user (uses sudo where required)
+# MicroK8s Grafana Deployment + Nginx Proxy Manager integration
+# TLS enabled, PVC for persistence, automatic NPM proxy host
+# Idempotent & safe to run multiple times
 
 set -euo pipefail
 
@@ -13,6 +12,8 @@ NAMESPACE="monitoring"
 HOSTNAME="grafana.local"
 TLS_SECRET="grafana-tls"
 PVC_NAME="grafana-data-pvc"
+NPM_NAMESPACE="nginx"
+NPM_SERVICE_NAME="nginx-proxy-manager"
 
 echo "=== Ensuring user has MicroK8s permissions ==="
 if ! groups $USER_NAME | grep -q "\bmicrok8s\b"; then
@@ -28,7 +29,6 @@ echo "=== Waiting for MicroK8s to be ready ==="
 microk8s status --wait-ready >/dev/null
 
 # Detect node IP
-echo "=== Detecting node IP ==="
 NODE_IP=$(hostname -I | awk '{print $1}')
 if [[ -z "$NODE_IP" ]]; then
     echo "ERROR: Could not detect node IP"
@@ -36,13 +36,11 @@ if [[ -z "$NODE_IP" ]]; then
 fi
 echo "Detected node IP: $NODE_IP"
 
-# Ensure namespace exists
-echo "=== Creating namespace $NAMESPACE ==="
-$MICROK8S_KUBECTL get namespace $NAMESPACE >/dev/null 2>&1 || \
-    $MICROK8S_KUBECTL create namespace $NAMESPACE
+# Ensure monitoring namespace exists
+$MICROK8S_KUBECTL get ns $NAMESPACE >/dev/null 2>&1 || \
+    $MICROK8S_KUBECTL create ns $NAMESPACE
 
 # Create PVC for Grafana data
-echo "=== Creating PersistentVolumeClaim for Grafana data ==="
 $MICROK8S_KUBECTL apply -n $NAMESPACE -f - <<EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -58,7 +56,6 @@ spec:
 EOF
 
 # Deploy Grafana
-echo "=== Deploying Grafana ==="
 $MICROK8S_KUBECTL apply -n $NAMESPACE -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -90,7 +87,6 @@ spec:
 EOF
 
 # Expose ClusterIP service
-echo "=== Exposing Grafana via ClusterIP service ==="
 $MICROK8S_KUBECTL apply -n $NAMESPACE -f - <<EOF
 apiVersion: v1
 kind: Service
@@ -107,8 +103,7 @@ spec:
   type: ClusterIP
 EOF
 
-# Generate self-signed TLS
-echo "=== Generating self-signed TLS certificate for Grafana ==="
+# Generate self-signed TLS certificate
 openssl req -x509 -nodes -days 365 \
     -newkey rsa:2048 \
     -keyout grafana.key \
@@ -116,7 +111,6 @@ openssl req -x509 -nodes -days 365 \
     -subj "/CN=${HOSTNAME}/O=LocalOrg" >/dev/null 2>&1
 
 # Create TLS Secret
-echo "=== Creating TLS Secret ==="
 $MICROK8S_KUBECTL delete secret $TLS_SECRET -n $NAMESPACE --ignore-not-found >/dev/null 2>&1
 $MICROK8S_KUBECTL create secret tls $TLS_SECRET \
     --namespace=$NAMESPACE \
@@ -124,7 +118,6 @@ $MICROK8S_KUBECTL create secret tls $TLS_SECRET \
     --key=grafana.key
 
 # Apply Ingress with TLS
-echo "=== Creating Ingress for Grafana (TLS enabled) ==="
 $MICROK8S_KUBECTL apply -n $NAMESPACE -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -152,20 +145,35 @@ spec:
 EOF
 
 # Wait for deployment rollout
-echo "=== Waiting for Deployment rollout ==="
 $MICROK8S_KUBECTL rollout status deployment/grafana -n $NAMESPACE
 
 # Update /etc/hosts
-echo "=== Updating /etc/hosts ==="
 if grep -q "$HOSTNAME" /etc/hosts; then
-    echo "Updating existing /etc/hosts entry..."
     sudo sed -i "s/.*$HOSTNAME/$NODE_IP $HOSTNAME/" /etc/hosts
 else
     echo "$NODE_IP $HOSTNAME" | sudo tee -a /etc/hosts >/dev/null
 fi
 
+# === Add Proxy Host to Nginx Proxy Manager ===
+# This uses kubectl exec to create a proxy host in NPM automatically via its API container.
+# Make sure NPM is running and ready.
+
+echo "=== Configuring Nginx Proxy Manager for grafana.local ==="
+NPM_POD=$($MICROK8S_KUBECTL get pod -n $NPM_NAMESPACE -l app=nginx-proxy-manager -o jsonpath='{.items[0].metadata.name}')
+$MICROK8S_KUBECTL exec -n $NPM_NAMESPACE $NPM_POD -- /bin/sh -c "
+curl -s -X POST http://localhost:81/api/nginx/proxy-hosts \
+-H 'Content-Type: application/json' \
+-d '{
+  \"domain_names\": [\"$HOSTNAME\"],
+  \"forward_host\": \"$NODE_IP\",
+  \"forward_port\": 3000,
+  \"ssl\": true,
+  \"ssl_forced\": true
+}' || echo 'Proxy host might already exist or NPM API unavailable'
+"
+
 echo ""
 echo "=== DONE ==="
-echo "Grafana URL: https://$HOSTNAME"
+echo "Grafana URL via Nginx Proxy Manager: https://$HOSTNAME"
 echo "Default login: admin / admin (change password immediately)"
-echo "(Browsers will show a warning because this is a self-signed certificate.)"
+echo "(Browsers will show a warning due to self-signed certificate.)"
