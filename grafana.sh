@@ -13,7 +13,7 @@ HOSTNAME="grafana.local"
 TLS_SECRET="grafana-tls"
 PVC_NAME="grafana-data-pvc"
 NPM_NAMESPACE="nginx"
-NPM_SERVICE_NAME="nginx-proxy-manager"
+NPM_SERVICE_LABEL="app=nginx-proxy-manager"
 
 echo "=== Ensuring user has MicroK8s permissions ==="
 if ! groups $USER_NAME | grep -q "\bmicrok8s\b"; then
@@ -103,7 +103,7 @@ spec:
   type: ClusterIP
 EOF
 
-# Generate self-signed TLS certificate
+# Generate self-signed TLS
 openssl req -x509 -nodes -days 365 \
     -newkey rsa:2048 \
     -keyout grafana.key \
@@ -144,7 +144,7 @@ spec:
               number: 3000
 EOF
 
-# Wait for deployment rollout
+# Wait for rollout
 $MICROK8S_KUBECTL rollout status deployment/grafana -n $NAMESPACE
 
 # Update /etc/hosts
@@ -154,21 +154,21 @@ else
     echo "$NODE_IP $HOSTNAME" | sudo tee -a /etc/hosts >/dev/null
 fi
 
-# === Add Proxy Host to Nginx Proxy Manager ===
-# This uses kubectl exec to create a proxy host in NPM automatically via its API container.
-# Make sure NPM is running and ready.
-
-echo "=== Configuring Nginx Proxy Manager for grafana.local ==="
-NPM_POD=$($MICROK8S_KUBECTL get pod -n $NPM_NAMESPACE -l app=nginx-proxy-manager -o jsonpath='{.items[0].metadata.name}')
+# === Add Proxy Host to Nginx Proxy Manager via API ===
+echo "=== Configuring Nginx Proxy Manager for $HOSTNAME ==="
+NPM_POD=$($MICROK8S_KUBECTL get pod -n $NPM_NAMESPACE -l $NPM_SERVICE_LABEL -o jsonpath='{.items[0].metadata.name}')
 $MICROK8S_KUBECTL exec -n $NPM_NAMESPACE $NPM_POD -- /bin/sh -c "
 curl -s -X POST http://localhost:81/api/nginx/proxy-hosts \
 -H 'Content-Type: application/json' \
 -d '{
   \"domain_names\": [\"$HOSTNAME\"],
+  \"forward_scheme\": \"http\",
   \"forward_host\": \"$NODE_IP\",
   \"forward_port\": 3000,
   \"ssl\": true,
-  \"ssl_forced\": true
+  \"ssl_forced\": true,
+  \"cache_enabled\": false,
+  \"block_exploits\": false
 }' || echo 'Proxy host might already exist or NPM API unavailable'
 "
 
