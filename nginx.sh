@@ -70,11 +70,14 @@ spec:
   selector:
     app: nginx-proxy-manager
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 80
-    - port: 81
+    - name: ui
+      port: 81
       targetPort: 81
-    - port: 443
+    - name: https
+      port: 443
       targetPort: 443
   type: ClusterIP
 EOF
